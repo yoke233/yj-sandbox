@@ -1,31 +1,37 @@
 # yj-sandbox
 
-A **non-elevated Windows restricted-token sandbox** for running untrusted
-commands. It confines a command's **writes** to a set of granted directories
-using a `WRITE_RESTRICTED` token plus per-root capability SIDs — enforced by the
-Windows kernel, with **no admin rights, no UAC prompt, no driver, and no
-separate user account**.
+A small Rust sandbox runner for untrusted commands:
+
+- **Windows**: non-elevated restricted-token sandbox. Writes are confined to
+  granted directories using a `WRITE_RESTRICTED` token plus per-root capability
+  SIDs, with no admin rights, UAC prompt, driver, or separate user account.
+- **macOS**: Seatbelt sandbox via `/usr/bin/sandbox-exec`. The same writable
+  root model is translated into an SBPL profile. This supports both
+  `x86_64-apple-darwin` and `aarch64-apple-darwin` builds.
 
 This is a vendored and slimmed subset of
-[`openai/codex`](https://github.com/openai/codex)'s `windows-sandbox-rs`
-(Apache-2.0), reduced to the non-elevated capture path and decoupled from the
-Codex crates. See [`NOTICE`](./NOTICE). For how upstream changes are pulled in,
-see [`SYNCING.md`](./SYNCING.md).
+[`openai/codex`](https://github.com/openai/codex)'s Windows and macOS sandbox
+code (Apache-2.0), reduced to the standalone capture path and decoupled from
+the Codex crates. See [`NOTICE`](./NOTICE). For how upstream changes are pulled
+in, see [`SYNCING.md`](./SYNCING.md).
 
 ## Security model — read this first
 
 | Capability | Enforced? | Notes |
 |---|---|---|
-| **Write** outside granted roots | ✅ kernel-enforced | The whole point. Blocks accidental/destructive writes to the system, other projects, user files. |
-| **Read** any file | ❌ **not** restricted | Full-disk read. `WRITE_RESTRICTED` tokens only consult capability SIDs for *writes*. `~/.ssh`, tokens, cookies are all readable. |
-| **Network** | ⚠️ soft only | Injects `HTTP_PROXY` → dead port, `CARGO_NET_OFFLINE`, ssh/scp stub shims, etc. Native sockets bypass it. Existing proxy env vars are **not** overridden. |
+| **Write** outside granted roots | ✅ kernel-enforced | Windows ACL/restricted-token checks; macOS Seatbelt `file-write*` policy. |
+| **Read** any file | ❌ **not** restricted | Default profiles grant full-disk read. `~/.ssh`, tokens, cookies are all readable. |
+| **Network** | Platform-specific | Windows is env-based soft blocking. macOS uses Seatbelt default deny unless network is enabled. |
 
 **Use this when your threat model is "prevent damage / fat-finger", not
-"prevent data exfiltration".** Blocking reads or doing real network isolation
-requires the elevated backend (separate sandbox account + deny-read ACLs + WFP),
-which this fork intentionally does not include.
+"prevent data exfiltration".** Blocking reads requires stricter split
+filesystem policies from upstream Codex that this fork has not exposed yet.
+On Windows, real network isolation requires the elevated backend (WFP), which
+this fork intentionally does not include.
 
 ## How it works
+
+### Windows
 
 1. A random **capability SID** (`S-1-5-21-…`, backed by no real account) is
    generated per writable root and persisted under the state dir.
@@ -40,6 +46,17 @@ Writable roots are **cwd-aware**: of the declared `--workspace-root`s, only the
 one containing the working directory is made writable (least privilege); extra
 `--writable` roots and `--temp` are always writable.
 
+### macOS
+
+1. The same resolved writable roots are converted to Seatbelt `file-write*`
+   allow rules.
+2. The base profile starts with `(deny default)`, then allows process basics,
+   read access, PTYs, readonly preferences, and platform services needed by
+   common tools.
+3. `.git`, `.codex`, and `.agents` under writable roots stay read-only via
+   Seatbelt path exclusions, even if they do not exist yet.
+4. The command is launched as `/usr/bin/sandbox-exec -p <profile> -- <command>`.
+
 ## Usage
 
 ```
@@ -47,12 +64,12 @@ yj-sandbox-run [OPTIONS] -- <command> [args...]
 
   --workspace-root <DIR>   cwd-aware writable project root (repeatable)
   --writable <DIR>         always-writable extra root (repeatable)
-  --temp                   also make TEMP/TMP writable
+  --temp                   also make TEMP/TMP or TMPDIR writable
   --read-only              no writable roots (read-only sandbox)
   --no-network             apply the env-based soft network block
   --cwd <DIR>              working directory (default: current dir)
   --state-dir <DIR>        capability-SID + log dir (default: %LOCALAPPDATA%\yj-sandbox)
-  --private-desktop        run on a private desktop/window station
+  --private-desktop        run on a private desktop/window station (Windows)
   --timeout-ms <N>         terminate the command after N ms
 ```
 
@@ -67,20 +84,19 @@ yj-sandbox-run --read-only --cwd C:\proj\app -- cmd /c "npm test"
 ```
 
 Exit code is the child's exit code (`192` on timeout, `2` on argument error).
-Child stdout/stderr are streamed live to this process's stdout/stderr. The
-child runs inside a kill-on-close job object: killing `yj-sandbox-run` (or
-its normal exit) tears down the entire sandboxed process tree, including
-backgrounded grandchildren.
+Child stdout/stderr are streamed live to this process's stdout/stderr. On
+Windows, the child runs inside a kill-on-close job object so killing
+`yj-sandbox-run` tears down the sandboxed process tree.
 
 ## Library
 
 ```rust
-use yj_sandbox::{ResolvedWindowsSandboxPermissions, run_sandbox_capture};
+use yj_sandbox::{ResolvedSandboxPermissions, run_sandbox_capture};
 
-let perms = ResolvedWindowsSandboxPermissions::workspace_write(
+let perms = ResolvedSandboxPermissions::workspace_write(
     vec![workspace_root],   // cwd-aware workspace roots
     vec![],                 // extra always-writable roots
-    true,                   // include TEMP/TMP
+    true,                   // include TEMP/TMP or TMPDIR
     false,                  // block_network (soft)
 );
 // Last two flags: use_private_desktop, stream_output (tee child output live).
@@ -90,12 +106,13 @@ let result = run_sandbox_capture(&perms, &state_dir, command, &cwd, env, None, N
 ## Build
 
 ```
-cargo build --release   # -> target/release/yj-sandbox-run.exe
+cargo build --release
 ```
 
-Windows host with the MSVC toolchain. The crate compiles on non-Windows (the
-runner is a stub that errors at call time) so it can be referenced from
-cross-platform workspaces.
+Windows builds produce `yj-sandbox-run.exe`. macOS builds use the same binary
+name and require `/usr/bin/sandbox-exec` at runtime. Build separately for Intel
+and Apple Silicon with `x86_64-apple-darwin` and `aarch64-apple-darwin`, or
+combine them into a universal binary outside Cargo.
 
 ## License
 

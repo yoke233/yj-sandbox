@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BIN_NAME: yj-sandbox-run
+
+jobs:
+  build-windows:
+    name: Build Windows x86_64
+    runs-on: [self-hosted, Windows, X64]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if ([string]::IsNullOrWhiteSpace($version) -or $version -eq "${{ github.ref_name }}") {
+            $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          }
+          $packageName = "yj-sandbox-v$version-windows-x86_64"
+          $dist = Join-Path $PWD "dist"
+          $packageDir = Join-Path $dist $packageName
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          Copy-Item "target/release/$env:BIN_NAME.exe" $packageDir
+          Copy-Item README.md,LICENSE,NOTICE $packageDir
+          Compress-Archive -Path "$packageDir/*" -DestinationPath "$dist/$packageName.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yj-sandbox-windows-x86_64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS x86_64/aarch64
+    runs-on: [self-hosted, macOS, X64]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Rust toolchain
+        run: |
+          set -euo pipefail
+          if [ -x "$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin/cargo" ]; then
+            echo "$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin" >> "$GITHUB_PATH"
+          fi
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          if command -v rustup >/dev/null 2>&1; then
+            rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          fi
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          lipo -create \
+            -output target/yj-sandbox-run-universal \
+            target/x86_64-apple-darwin/release/$BIN_NAME \
+            target/aarch64-apple-darwin/release/$BIN_NAME
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ] || [ "$version" = "$GITHUB_REF_NAME" ]; then
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          fi
+          dist="$PWD/dist"
+          mkdir -p "$dist"
+
+          package_one() {
+            arch="$1"
+            bin_path="$2"
+            package_name="yj-sandbox-v${version}-macos-${arch}"
+            package_dir="$dist/$package_name"
+            mkdir -p "$package_dir"
+            cp "$bin_path" "$package_dir/$BIN_NAME"
+            cp README.md LICENSE NOTICE "$package_dir/"
+            (cd "$dist" && tar -czf "$package_name.tar.gz" "$package_name")
+          }
+
+          package_one x86_64 "target/x86_64-apple-darwin/release/$BIN_NAME"
+          package_one aarch64 "target/aarch64-apple-darwin/release/$BIN_NAME"
+          package_one universal "target/yj-sandbox-run-universal"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yj-sandbox-macos
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos]
+    runs-on: [self-hosted, macOS, X64]
+    if: startsWith(github.ref, 'refs/tags/v')
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          (cd dist && shasum -a 256 * > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: yj-sandbox ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt

@@ -1,10 +1,10 @@
-//! Resolved Windows sandbox permissions (decoupled from `codex_protocol`).
+//! Resolved sandbox permissions (decoupled from `codex_protocol`).
 //!
 //! Upstream Codex builds this from a `PermissionProfile` / `FileSystemSandboxPolicy`.
 //! This crate has no dependency on those types, so the same public surface
-//! (`ResolvedWindowsSandboxPermissions`, `WindowsWritableRoot`, the
+//! (`ResolvedSandboxPermissions`, `WindowsWritableRoot`, the
 //! `*_for_cwd` accessors) is reproduced over a small self-contained
-//! representation. Behaviour matches Codex's non-elevated path:
+//! representation. Windows behaviour matches Codex's non-elevated path:
 //!
 //! * full-disk **read**; only **writes** are constrained,
 //! * `:workspace_roots` are resolved *cwd-aware* — only the workspace root that
@@ -17,6 +17,13 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::path_normalization::canonicalize_path;
+#[cfg(target_os = "macos")]
+use crate::{
+    absolute_path::AbsolutePathBuf,
+    macos_permissions::{
+        FileSystemSandboxPolicy, NetworkSandboxPolicy, WritableRoot as MacosWritableRoot,
+    },
+};
 
 /// Subdirectories denied write inside every writable root, matching Codex.
 const PROTECTED_SUBDIRS: &[&str] = &[".git", ".codex", ".agents"];
@@ -30,7 +37,7 @@ pub struct WindowsWritableRoot {
 
 /// Windows-local view of the runtime permission profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedWindowsSandboxPermissions {
+pub struct ResolvedSandboxPermissions {
     /// Workspace/project roots; only the one containing the cwd becomes writable.
     workspace_roots: Vec<PathBuf>,
     /// Roots that are writable regardless of cwd.
@@ -41,7 +48,10 @@ pub struct ResolvedWindowsSandboxPermissions {
     block_network: bool,
 }
 
-impl ResolvedWindowsSandboxPermissions {
+/// Backwards-compatible name for the originally Windows-only public API.
+pub type ResolvedWindowsSandboxPermissions = ResolvedSandboxPermissions;
+
+impl ResolvedSandboxPermissions {
     /// Full-disk read, no writes anywhere.
     pub fn read_only(block_network: bool) -> Self {
         Self {
@@ -127,6 +137,59 @@ impl ResolvedWindowsSandboxPermissions {
             read_only_subpaths,
         });
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn macos_file_system_policy_for_cwd(
+        &self,
+        cwd: &Path,
+        env_map: &HashMap<String, String>,
+    ) -> FileSystemSandboxPolicy {
+        let writable_roots = self.macos_writable_roots_for_cwd(cwd, env_map);
+        if writable_roots.is_empty() {
+            FileSystemSandboxPolicy::read_only_full_disk()
+        } else {
+            FileSystemSandboxPolicy::workspace_write_full_read(writable_roots)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn macos_network_policy(&self) -> NetworkSandboxPolicy {
+        if self.block_network {
+            NetworkSandboxPolicy::Restricted
+        } else {
+            NetworkSandboxPolicy::Enabled
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_writable_roots_for_cwd(
+        &self,
+        cwd: &Path,
+        env_map: &HashMap<String, String>,
+    ) -> Vec<MacosWritableRoot> {
+        let cwd_abs = absolute_cwd(cwd);
+        let canonical_cwd = canonicalize_path(&cwd_abs);
+        let mut out = Vec::new();
+
+        for root in &self.workspace_roots {
+            let root = absolute_for_cwd(root, &canonical_cwd);
+            let canonical = canonicalize_path(&root);
+            if canonical_cwd.starts_with(&canonical) {
+                push_macos_root(&mut out, canonical);
+            }
+        }
+        for root in &self.extra_writable_roots {
+            let root = absolute_for_cwd(root, &canonical_cwd);
+            push_macos_root(&mut out, canonicalize_path(&root));
+        }
+        if self.include_temp {
+            for temp_root in macos_temp_env_roots(env_map) {
+                push_macos_root(&mut out, canonicalize_path(&temp_root));
+            }
+        }
+
+        out
+    }
 }
 
 /// `.git` / `.codex` / `.agents` under `root`, when they exist on disk.
@@ -153,6 +216,63 @@ fn windows_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
         .collect()
 }
 
+#[cfg(target_os = "macos")]
+fn macos_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(tmpdir) = env_map
+        .get("TMPDIR")
+        .map(|value| PathBuf::from(value.as_str()))
+        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
+        .filter(|path| path.is_absolute())
+    {
+        roots.push(tmpdir);
+    }
+    roots.push(PathBuf::from("/tmp"));
+    roots
+}
+
+#[cfg(target_os = "macos")]
+fn absolute_cwd(cwd: &Path) -> PathBuf {
+    if cwd.is_absolute() {
+        cwd.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(cwd)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn absolute_for_cwd(path: &Path, cwd: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn push_macos_root(out: &mut Vec<MacosWritableRoot>, root: PathBuf) {
+    if out.iter().any(|existing| existing.root.as_path() == root) {
+        return;
+    }
+    let Ok(root) = AbsolutePathBuf::from_absolute_path(root) else {
+        return;
+    };
+    let read_only_subpaths = protected_subpaths(root.as_path())
+        .into_iter()
+        .filter_map(|path| AbsolutePathBuf::from_absolute_path(path).ok())
+        .collect();
+    out.push(MacosWritableRoot {
+        root,
+        read_only_subpaths,
+        protected_metadata_names: PROTECTED_SUBDIRS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
+    });
+}
+
 /// Writable roots that should receive capability ACLs.
 ///
 /// Mirrors Codex's `setup::effective_write_roots_for_permissions` for the
@@ -160,8 +280,9 @@ fn windows_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
 /// passes the allow-set it already computed) those roots are used; otherwise the
 /// roots come from `permissions`. Roots are canonicalized, filtered to existing
 /// paths, deduped, and the sandbox state directory is never made writable.
+#[cfg(windows)]
 pub(crate) fn effective_write_roots_for_permissions(
-    permissions: &ResolvedWindowsSandboxPermissions,
+    permissions: &ResolvedSandboxPermissions,
     command_cwd: &Path,
     env_map: &HashMap<String, String>,
     state_dir: &Path,
@@ -183,6 +304,7 @@ pub(crate) fn effective_write_roots_for_permissions(
         .collect()
 }
 
+#[cfg(windows)]
 fn canonical_existing(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut seen: Vec<PathBuf> = Vec::new();
     for root in roots {

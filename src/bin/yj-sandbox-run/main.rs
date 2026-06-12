@@ -1,9 +1,7 @@
-//! `yj-sandbox-run` — run a command under the non-elevated Windows sandbox.
+//! `yj-sandbox-run` — run a command under the platform sandbox.
 //!
-//! Writes are confined by the OS to the granted roots; reads are unrestricted
-//! (full-disk read) and network is only soft-blocked via env vars. This is the
-//! restricted-token (no UAC, no admin) backend; it defends against accidental or
-//! destructive *writes*, not data exfiltration.
+//! On Windows this uses the non-elevated restricted-token backend. On macOS
+//! this uses Seatbelt via `/usr/bin/sandbox-exec`.
 //!
 //! Usage:
 //!   yj-sandbox-run [OPTIONS] -- <command> [args...]
@@ -11,12 +9,12 @@
 //! Options:
 //!   --workspace-root <DIR>   cwd-aware writable project root (repeatable)
 //!   --writable <DIR>         always-writable extra root (repeatable)
-//!   --temp                   also make TEMP/TMP writable
+//!   --temp                   also make TEMP/TMP or TMPDIR writable
 //!   --read-only              no writable roots (read-only sandbox)
 //!   --no-network             apply the env-based soft network block
 //!   --cwd <DIR>              working directory (default: current dir)
 //!   --state-dir <DIR>        sandbox state/log dir (default: %LOCALAPPDATA%\yj-sandbox)
-//!   --private-desktop        run on a private desktop/window station
+//!   --private-desktop        run on a private desktop/window station (Windows)
 //!   --timeout-ms <N>         terminate the command after N milliseconds
 //!   -h, --help               print this help
 
@@ -41,7 +39,7 @@ struct Args {
 }
 
 const HELP: &str = "\
-yj-sandbox-run — run a command under the non-elevated Windows sandbox
+yj-sandbox-run — run a command under the platform sandbox
 
 USAGE:
     yj-sandbox-run [OPTIONS] -- <command> [args...]
@@ -49,18 +47,18 @@ USAGE:
 OPTIONS:
     --workspace-root <DIR>   cwd-aware writable project root (repeatable)
     --writable <DIR>         always-writable extra root (repeatable)
-    --temp                   also make TEMP/TMP writable
+    --temp                   also make TEMP/TMP or TMPDIR writable
     --read-only              no writable roots (read-only sandbox)
     --no-network             apply the env-based soft network block
     --cwd <DIR>              working directory (default: current dir)
     --state-dir <DIR>        sandbox state/log dir (default: %LOCALAPPDATA%\\yj-sandbox)
-    --private-desktop        run on a private desktop/window station
+    --private-desktop        run on a private desktop/window station (Windows)
     --timeout-ms <N>         terminate the command after N milliseconds
     -h, --help               print this help
 
-NOTE: writes are OS-enforced to the granted roots; reads are NOT restricted and
-network is only soft-blocked via env vars. Use the elevated backend for
-deny-read or real network isolation.
+NOTE: writes are OS-enforced to the granted roots. Reads are unrestricted in the
+default profiles. Windows network blocking is soft; macOS network blocking is
+enforced by Seatbelt's default deny policy.
 ";
 
 fn parse_args() -> Result<Args, String> {

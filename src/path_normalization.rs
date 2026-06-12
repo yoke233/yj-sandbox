@@ -5,6 +5,7 @@ pub fn canonicalize_path(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn canonical_path_key(path: &Path) -> String {
     canonicalize_path(path)
         .to_string_lossy()
