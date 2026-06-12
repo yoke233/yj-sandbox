@@ -9,6 +9,10 @@ and modified subset of `codex-rs/windows-sandbox-rs` from openai/codex. It has
 been reduced to the non-elevated (restricted-token) capture path and decoupled
 from the `codex_protocol`, `codex_otel`, and `codex_utils_*` crates.
 
+Vendored from openai/codex at commit
+be338ee9a28ce5a1c75455343e9712aded82c70f. See SYNCING.md for how upstream
+changes are tracked and re-applied.
+
 Modifications from upstream:
   * Removed the elevated backend, WFP network filtering, sandbox-account
     provisioning, ConPTY/unified-exec sessions, deny-read ACLs, DPAPI, and OTEL.

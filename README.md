@@ -9,7 +9,8 @@ separate user account**.
 This is a vendored and slimmed subset of
 [`openai/codex`](https://github.com/openai/codex)'s `windows-sandbox-rs`
 (Apache-2.0), reduced to the non-elevated capture path and decoupled from the
-Codex crates. See [`NOTICE`](./NOTICE).
+Codex crates. See [`NOTICE`](./NOTICE). For how upstream changes are pulled in,
+see [`SYNCING.md`](./SYNCING.md).
 
 ## Security model — read this first
 
