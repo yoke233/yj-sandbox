@@ -22,6 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-x86_64-release
+          cache-on-failure: true
+
       - name: Build
         run: cargo build --release
 
@@ -48,6 +54,15 @@ jobs:
   build-macos:
     name: Build macOS x86_64/aarch64
     runs-on: [self-hosted, macOS, X64]
+    env:
+      HTTP_PROXY: http://127.0.0.1:7890
+      HTTPS_PROXY: http://127.0.0.1:7890
+      ALL_PROXY: http://127.0.0.1:7890
+      http_proxy: http://127.0.0.1:7890
+      https_proxy: http://127.0.0.1:7890
+      all_proxy: http://127.0.0.1:7890
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
     defaults:
       run:
         shell: bash
@@ -57,19 +72,33 @@ jobs:
       - name: Select Rust toolchain
         run: |
           set -euo pipefail
-          if [ -x "$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin/cargo" ]; then
-            echo "$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin" >> "$GITHUB_PATH"
+          rustup_bin="$HOME/.rustup/toolchains/stable-x86_64-apple-darwin/bin"
+          if [ -x "$rustup_bin/cargo" ]; then
+            echo "CARGO=$rustup_bin/cargo" >> "$GITHUB_ENV"
+            echo "RUSTC=$rustup_bin/rustc" >> "$GITHUB_ENV"
+            echo "$rustup_bin" >> "$GITHUB_PATH"
+          else
+            echo "CARGO=cargo" >> "$GITHUB_ENV"
+            echo "RUSTC=rustc" >> "$GITHUB_ENV"
           fi
           echo "/usr/local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-universal-release
+          cache-on-failure: true
 
       - name: Build
         run: |
           set -euo pipefail
-          if command -v rustup >/dev/null 2>&1; then
+          if [ -x /usr/local/bin/rustup ]; then
+            /usr/local/bin/rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          elif command -v rustup >/dev/null 2>&1; then
             rustup target add x86_64-apple-darwin aarch64-apple-darwin
           fi
-          cargo build --release --target x86_64-apple-darwin
-          cargo build --release --target aarch64-apple-darwin
+          "$CARGO" build --release --target x86_64-apple-darwin
+          "$CARGO" build --release --target aarch64-apple-darwin
           lipo -create \
             -output target/yj-sandbox-run-universal \
             target/x86_64-apple-darwin/release/$BIN_NAME \
@@ -111,6 +140,15 @@ jobs:
     needs: [build-windows, build-macos]
     runs-on: [self-hosted, macOS, X64]
     if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      HTTP_PROXY: http://127.0.0.1:7890
+      HTTPS_PROXY: http://127.0.0.1:7890
+      ALL_PROXY: http://127.0.0.1:7890
+      http_proxy: http://127.0.0.1:7890
+      https_proxy: http://127.0.0.1:7890
+      all_proxy: http://127.0.0.1:7890
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
     defaults:
       run:
         shell: bash
