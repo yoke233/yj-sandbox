@@ -54,15 +54,6 @@ jobs:
   build-macos:
     name: Build macOS x86_64/aarch64
     runs-on: [self-hosted, macOS, X64]
-    env:
-      HTTP_PROXY: http://127.0.0.1:7890
-      HTTPS_PROXY: http://127.0.0.1:7890
-      ALL_PROXY: http://127.0.0.1:7890
-      http_proxy: http://127.0.0.1:7890
-      https_proxy: http://127.0.0.1:7890
-      all_proxy: http://127.0.0.1:7890
-      NO_PROXY: localhost,127.0.0.1,::1
-      no_proxy: localhost,127.0.0.1,::1
     defaults:
       run:
         shell: bash
@@ -140,15 +131,6 @@ jobs:
     needs: [build-windows, build-macos]
     runs-on: [self-hosted, macOS, X64]
     if: startsWith(github.ref, 'refs/tags/v')
-    env:
-      HTTP_PROXY: http://127.0.0.1:7890
-      HTTPS_PROXY: http://127.0.0.1:7890
-      ALL_PROXY: http://127.0.0.1:7890
-      http_proxy: http://127.0.0.1:7890
-      https_proxy: http://127.0.0.1:7890
-      all_proxy: http://127.0.0.1:7890
-      NO_PROXY: localhost,127.0.0.1,::1
-      no_proxy: localhost,127.0.0.1,::1
     defaults:
       run:
         shell: bash
