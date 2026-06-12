@@ -21,7 +21,6 @@
 //!   -h, --help               print this help
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -169,6 +168,9 @@ fn run() -> Result<i32, String> {
 
     let env_map: HashMap<String, String> = std::env::vars().collect();
 
+    // Output is streamed live by the capture backend; the child runs inside a
+    // kill-on-close job, so killing this process tears down the whole sandboxed
+    // process tree.
     let result = run_sandbox_capture(
         &permissions,
         &state_dir,
@@ -178,13 +180,9 @@ fn run() -> Result<i32, String> {
         args.timeout_ms,
         None,
         args.private_desktop,
+        true,
     )
     .map_err(|e| format!("sandbox run failed: {e:#}"))?;
-
-    let _ = std::io::stdout().write_all(&result.stdout);
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().write_all(&result.stderr);
-    let _ = std::io::stderr().flush();
 
     if result.timed_out {
         eprintln!("win-sandbox-run: command timed out");

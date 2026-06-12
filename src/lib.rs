@@ -116,7 +116,9 @@ mod windows_impl {
     use super::spawn_prep::prepare_legacy_spawn_context;
     use anyhow::Result;
     use std::collections::HashMap;
+    use std::ffi::c_void;
     use std::io;
+    use std::io::Write;
     use std::path::Path;
     use std::ptr;
     use std::time::Duration;
@@ -126,6 +128,12 @@ mod windows_impl {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
     use windows_sys::Win32::Foundation::SetHandleInformation;
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+    use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+    use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+    use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
+    use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
     use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::GetExitCodeProcess;
     use windows_sys::Win32::System::Threading::INFINITE;
@@ -177,6 +185,30 @@ mod windows_impl {
         }
     }
 
+    /// Create a job object whose members are killed when its last handle
+    /// closes. The sandboxed child (and everything it spawns) is assigned to
+    /// it so the whole tree dies with this process instead of orphaning
+    /// grandchildren when only the direct child is terminated.
+    unsafe fn create_kill_on_close_job() -> Option<HANDLE> {
+        let job = CreateJobObjectW(ptr::null(), ptr::null());
+        if job == 0 {
+            return None;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            CloseHandle(job);
+            return None;
+        }
+        Some(job)
+    }
+
     unsafe fn setup_stdio_pipes() -> io::Result<PipeHandles> {
         let mut in_r: HANDLE = 0;
         let mut in_w: HANDLE = 0;
@@ -211,6 +243,12 @@ mod windows_impl {
     /// `state_dir` holds the persisted capability-SID map and rolling logs (the
     /// equivalent of Codex's `$CODEX_HOME`). `permissions` describes the writable
     /// roots and network policy; reads are always unrestricted in this backend.
+    ///
+    /// The child is placed in a kill-on-close job object, so the entire
+    /// sandboxed process tree is terminated when this function returns or when
+    /// the calling process dies. With `stream_output` the child's stdout/stderr
+    /// are additionally forwarded to this process's stdout/stderr as they
+    /// arrive (they are still captured in the returned `CaptureResult`).
     #[allow(clippy::too_many_arguments)]
     pub fn run_sandbox_capture(
         permissions: &ResolvedWindowsSandboxPermissions,
@@ -221,6 +259,7 @@ mod windows_impl {
         timeout_ms: Option<u64>,
         cancellation: Option<WindowsSandboxCancellationToken>,
         use_private_desktop: bool,
+        stream_output: bool,
     ) -> Result<CaptureResult> {
         let common = prepare_legacy_spawn_context(
             permissions,
@@ -299,6 +338,13 @@ mod windows_impl {
         let pi = created.process_info;
         let _desktop = created;
 
+        let job = unsafe { create_kill_on_close_job() };
+        if let Some(job) = job {
+            unsafe {
+                AssignProcessToJobObject(job, pi.hProcess);
+            }
+        }
+
         unsafe {
             CloseHandle(in_r);
             // Close the parent's stdin write end so the child sees EOF immediately.
@@ -326,6 +372,11 @@ mod windows_impl {
                 if ok == 0 || read_bytes == 0 {
                     break;
                 }
+                if stream_output {
+                    let mut out = io::stdout();
+                    let _ = out.write_all(&tmp[..read_bytes as usize]);
+                    let _ = out.flush();
+                }
                 buf.extend_from_slice(&tmp[..read_bytes as usize]);
             }
             let _ = tx_out.send(buf);
@@ -346,6 +397,11 @@ mod windows_impl {
                 };
                 if ok == 0 || read_bytes == 0 {
                     break;
+                }
+                if stream_output {
+                    let mut err = io::stderr();
+                    let _ = err.write_all(&tmp[..read_bytes as usize]);
+                    let _ = err.flush();
                 }
                 buf.extend_from_slice(&tmp[..read_bytes as usize]);
             }
@@ -374,6 +430,11 @@ mod windows_impl {
                 CloseHandle(pi.hProcess);
             }
             CloseHandle(security.h_token);
+            // Closing the job kills any lingering grandchildren; their pipe
+            // write ends close, letting the reader threads reach EOF below.
+            if let Some(job) = job {
+                CloseHandle(job);
+            }
         }
         let _ = t_out.join();
         let _ = t_err.join();
@@ -423,6 +484,7 @@ mod stub {
         _timeout_ms: Option<u64>,
         _cancellation: Option<WindowsSandboxCancellationToken>,
         _use_private_desktop: bool,
+        _stream_output: bool,
     ) -> Result<CaptureResult> {
         bail!("the Windows sandbox is only available on Windows")
     }

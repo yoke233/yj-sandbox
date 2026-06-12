@@ -39,7 +39,7 @@ sandbox_utils.rs  workspace_acl.rs
 | `logging.rs` | Inlined `codex_utils_string::take_bytes_at_char_boundary`; deleted `current_log_file_path_for_codex_home` (used `crate::sandbox_dir`) and the test module. |
 | `allow.rs` | `compute_allow_paths_for_permissions` takes our `ResolvedWindowsSandboxPermissions`; deleted the codex-typed test module. |
 | `spawn_prep.rs` | Dropped the elevated path (`prepare_elevated_spawn_context_for_permissions`, `ElevatedSpawnContext`), the deny-read branch, `readonly_sid_str`, and the codex-typed tests. `prepare_*` take a ready `&ResolvedWindowsSandboxPermissions` instead of `(PermissionProfile, workspace_roots)`. |
-| `lib.rs` | Rewritten. Our `run_sandbox_capture` ≈ upstream `windows_impl::run_windows_sandbox_capture_with_filesystem_overrides`, minus elevated/deny-read; plus `#[cfg(not(windows))]` stub. |
+| `lib.rs` | Rewritten. Our `run_sandbox_capture` ≈ upstream `windows_impl::run_windows_sandbox_capture_with_filesystem_overrides`, minus elevated/deny-read; plus `#[cfg(not(windows))]` stub, a kill-on-close job object around the child tree, and a `stream_output` tee flag (no upstream counterparts — keep both on sync). |
 
 ### Rewritten — no longer tracks upstream line-for-line
 

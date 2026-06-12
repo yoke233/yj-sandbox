@@ -20,5 +20,8 @@ Modifications from upstream:
     with a self-contained one (cwd-aware workspace roots + extra writable roots
     + temp; always deny .git/.codex/.agents inside writable roots).
   * Inlined `codex_utils_string::take_bytes_at_char_boundary`.
+  * Added to the capture path: a kill-on-close job object containing the
+    sandboxed process tree, and optional live streaming of child stdout/stderr
+    (`stream_output` flag).
 
 Copyright (c) OpenAI. Licensed under Apache-2.0; see LICENSE.

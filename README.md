@@ -67,7 +67,10 @@ win-sandbox-run --read-only --cwd C:\proj\app -- cmd /c "npm test"
 ```
 
 Exit code is the child's exit code (`192` on timeout, `2` on argument error).
-Child stdout/stderr are forwarded to this process's stdout/stderr.
+Child stdout/stderr are streamed live to this process's stdout/stderr. The
+child runs inside a kill-on-close job object: killing `win-sandbox-run` (or
+its normal exit) tears down the entire sandboxed process tree, including
+backgrounded grandchildren.
 
 ## Library
 
@@ -80,7 +83,8 @@ let perms = ResolvedWindowsSandboxPermissions::workspace_write(
     true,                   // include TEMP/TMP
     false,                  // block_network (soft)
 );
-let result = run_sandbox_capture(&perms, &state_dir, command, &cwd, env, None, None, false)?;
+// Last two flags: use_private_desktop, stream_output (tee child output live).
+let result = run_sandbox_capture(&perms, &state_dir, command, &cwd, env, None, None, false, false)?;
 ```
 
 ## Build
