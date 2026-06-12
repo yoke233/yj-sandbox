@@ -1,0 +1,20 @@
+win-sandbox
+
+This product includes software developed by OpenAI as part of the Codex
+project (https://github.com/openai/codex), licensed under the Apache License,
+Version 2.0.
+
+The Windows restricted-token sandbox implementation under `src/` is a vendored
+and modified subset of `codex-rs/windows-sandbox-rs` from openai/codex. It has
+been reduced to the non-elevated (restricted-token) capture path and decoupled
+from the `codex_protocol`, `codex_otel`, and `codex_utils_*` crates.
+
+Modifications from upstream:
+  * Removed the elevated backend, WFP network filtering, sandbox-account
+    provisioning, ConPTY/unified-exec sessions, deny-read ACLs, DPAPI, and OTEL.
+  * Replaced `ResolvedWindowsSandboxPermissions`'s `codex_protocol` construction
+    with a self-contained one (cwd-aware workspace roots + extra writable roots
+    + temp; always deny .git/.codex/.agents inside writable roots).
+  * Inlined `codex_utils_string::take_bytes_at_char_boundary`.
+
+Copyright (c) OpenAI. Licensed under Apache-2.0; see LICENSE.
