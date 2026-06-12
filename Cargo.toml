@@ -1,19 +1,19 @@
 [package]
-name = "win-sandbox"
-version = "0.2.0"
+name = "yj-sandbox"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Non-elevated Windows restricted-token sandbox (vendored & decoupled from openai/codex)"
-repository = "https://github.com/yoke233/win-sandbox"
+repository = "https://github.com/yoke233/yj-sandbox"
 
 [lib]
-name = "win_sandbox"
+name = "yj_sandbox"
 path = "src/lib.rs"
 doctest = false
 
 [[bin]]
-name = "win-sandbox-run"
-path = "src/bin/win-sandbox-run/main.rs"
+name = "yj-sandbox-run"
+path = "src/bin/yj-sandbox-run/main.rs"
 
 [dependencies]
 anyhow = "1.0"

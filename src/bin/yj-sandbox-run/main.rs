@@ -1,4 +1,4 @@
-//! `win-sandbox-run` — run a command under the non-elevated Windows sandbox.
+//! `yj-sandbox-run` — run a command under the non-elevated Windows sandbox.
 //!
 //! Writes are confined by the OS to the granted roots; reads are unrestricted
 //! (full-disk read) and network is only soft-blocked via env vars. This is the
@@ -6,7 +6,7 @@
 //! destructive *writes*, not data exfiltration.
 //!
 //! Usage:
-//!   win-sandbox-run [OPTIONS] -- <command> [args...]
+//!   yj-sandbox-run [OPTIONS] -- <command> [args...]
 //!
 //! Options:
 //!   --workspace-root <DIR>   cwd-aware writable project root (repeatable)
@@ -15,7 +15,7 @@
 //!   --read-only              no writable roots (read-only sandbox)
 //!   --no-network             apply the env-based soft network block
 //!   --cwd <DIR>              working directory (default: current dir)
-//!   --state-dir <DIR>        sandbox state/log dir (default: %LOCALAPPDATA%\win-sandbox)
+//!   --state-dir <DIR>        sandbox state/log dir (default: %LOCALAPPDATA%\yj-sandbox)
 //!   --private-desktop        run on a private desktop/window station
 //!   --timeout-ms <N>         terminate the command after N milliseconds
 //!   -h, --help               print this help
@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use win_sandbox::ResolvedWindowsSandboxPermissions;
-use win_sandbox::run_sandbox_capture;
+use yj_sandbox::ResolvedWindowsSandboxPermissions;
+use yj_sandbox::run_sandbox_capture;
 
 struct Args {
     workspace_roots: Vec<PathBuf>,
@@ -41,10 +41,10 @@ struct Args {
 }
 
 const HELP: &str = "\
-win-sandbox-run — run a command under the non-elevated Windows sandbox
+yj-sandbox-run — run a command under the non-elevated Windows sandbox
 
 USAGE:
-    win-sandbox-run [OPTIONS] -- <command> [args...]
+    yj-sandbox-run [OPTIONS] -- <command> [args...]
 
 OPTIONS:
     --workspace-root <DIR>   cwd-aware writable project root (repeatable)
@@ -53,7 +53,7 @@ OPTIONS:
     --read-only              no writable roots (read-only sandbox)
     --no-network             apply the env-based soft network block
     --cwd <DIR>              working directory (default: current dir)
-    --state-dir <DIR>        sandbox state/log dir (default: %LOCALAPPDATA%\\win-sandbox)
+    --state-dir <DIR>        sandbox state/log dir (default: %LOCALAPPDATA%\\yj-sandbox)
     --private-desktop        run on a private desktop/window station
     --timeout-ms <N>         terminate the command after N milliseconds
     -h, --help               print this help
@@ -132,9 +132,9 @@ fn require_value(
 
 fn default_state_dir() -> PathBuf {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(local).join("win-sandbox");
+        return PathBuf::from(local).join("yj-sandbox");
     }
-    std::env::temp_dir().join("win-sandbox")
+    std::env::temp_dir().join("yj-sandbox")
 }
 
 fn run() -> Result<i32, String> {
@@ -185,7 +185,7 @@ fn run() -> Result<i32, String> {
     .map_err(|e| format!("sandbox run failed: {e:#}"))?;
 
     if result.timed_out {
-        eprintln!("win-sandbox-run: command timed out");
+        eprintln!("yj-sandbox-run: command timed out");
     }
     Ok(result.exit_code)
 }
@@ -194,7 +194,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(u8::try_from(code & 0xff).unwrap_or(1)),
         Err(msg) => {
-            eprintln!("win-sandbox-run: {msg}");
+            eprintln!("yj-sandbox-run: {msg}");
             ExitCode::from(2)
         }
     }

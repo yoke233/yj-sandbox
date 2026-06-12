@@ -50,7 +50,7 @@ sandbox_utils.rs  workspace_acl.rs
 ### Added — no upstream counterpart
 
 ```
-src/bin/win-sandbox-run/main.rs    # the CLI sidecar
+src/bin/yj-sandbox-run/main.rs     # the CLI sidecar
 ```
 
 ### Intentionally NOT vendored (upstream has these; we dropped them)
@@ -105,7 +105,7 @@ Then:
 ## Smoke check (run in PowerShell, not git-bash — MSYS mangles `/c`)
 
 ```powershell
-$bin = ".\target\release\win-sandbox-run.exe"
+$bin = ".\target\release\yj-sandbox-run.exe"
 $ws  = "C:\some\workspace"
 # write inside -> ok
 & $bin --workspace-root $ws --cwd $ws -- cmd /c "echo hi> in.txt"          # exit 0, file created

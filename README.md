@@ -1,4 +1,4 @@
-# win-sandbox
+# yj-sandbox
 
 A **non-elevated Windows restricted-token sandbox** for running untrusted
 commands. It confines a command's **writes** to a set of granted directories
@@ -43,7 +43,7 @@ one containing the working directory is made writable (least privilege); extra
 ## Usage
 
 ```
-win-sandbox-run [OPTIONS] -- <command> [args...]
+yj-sandbox-run [OPTIONS] -- <command> [args...]
 
   --workspace-root <DIR>   cwd-aware writable project root (repeatable)
   --writable <DIR>         always-writable extra root (repeatable)
@@ -51,7 +51,7 @@ win-sandbox-run [OPTIONS] -- <command> [args...]
   --read-only              no writable roots (read-only sandbox)
   --no-network             apply the env-based soft network block
   --cwd <DIR>              working directory (default: current dir)
-  --state-dir <DIR>        capability-SID + log dir (default: %LOCALAPPDATA%\win-sandbox)
+  --state-dir <DIR>        capability-SID + log dir (default: %LOCALAPPDATA%\yj-sandbox)
   --private-desktop        run on a private desktop/window station
   --timeout-ms <N>         terminate the command after N ms
 ```
@@ -60,22 +60,22 @@ Examples:
 
 ```powershell
 # Confine writes to a project; run a build
-win-sandbox-run --workspace-root C:\proj\app --cwd C:\proj\app -- cmd /c "npm run build"
+yj-sandbox-run --workspace-root C:\proj\app --cwd C:\proj\app -- cmd /c "npm run build"
 
 # Read-only: command can read anything but write nothing
-win-sandbox-run --read-only --cwd C:\proj\app -- cmd /c "npm test"
+yj-sandbox-run --read-only --cwd C:\proj\app -- cmd /c "npm test"
 ```
 
 Exit code is the child's exit code (`192` on timeout, `2` on argument error).
 Child stdout/stderr are streamed live to this process's stdout/stderr. The
-child runs inside a kill-on-close job object: killing `win-sandbox-run` (or
+child runs inside a kill-on-close job object: killing `yj-sandbox-run` (or
 its normal exit) tears down the entire sandboxed process tree, including
 backgrounded grandchildren.
 
 ## Library
 
 ```rust
-use win_sandbox::{ResolvedWindowsSandboxPermissions, run_sandbox_capture};
+use yj_sandbox::{ResolvedWindowsSandboxPermissions, run_sandbox_capture};
 
 let perms = ResolvedWindowsSandboxPermissions::workspace_write(
     vec![workspace_root],   // cwd-aware workspace roots
@@ -90,7 +90,7 @@ let result = run_sandbox_capture(&perms, &state_dir, command, &cwd, env, None, N
 ## Build
 
 ```
-cargo build --release   # -> target/release/win-sandbox-run.exe
+cargo build --release   # -> target/release/yj-sandbox-run.exe
 ```
 
 Windows host with the MSVC toolchain. The crate compiles on non-Windows (the
