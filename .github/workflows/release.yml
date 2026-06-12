@@ -22,12 +22,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: windows-x86_64-release
-          cache-on-failure: true
-
       - name: Build
         run: cargo build --release
 
@@ -73,12 +67,6 @@ jobs:
             echo "RUSTC=rustc" >> "$GITHUB_ENV"
           fi
           echo "/usr/local/bin" >> "$GITHUB_PATH"
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: macos-universal-release
-          cache-on-failure: true
 
       - name: Build
         run: |
