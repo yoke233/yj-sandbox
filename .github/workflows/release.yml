@@ -131,7 +131,7 @@ jobs:
       - name: Checksums
         run: |
           set -euo pipefail
-          (cd dist && shasum -a 256 * > SHA256SUMS.txt)
+          (cd dist && find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec shasum -a 256 {} + | sed 's#  ./#  #' > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
 
       - name: Create release
