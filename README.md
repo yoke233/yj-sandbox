@@ -88,6 +88,35 @@ Child stdout/stderr are streamed live to this process's stdout/stderr. On
 Windows, the child runs inside a kill-on-close job object so killing
 `yj-sandbox-run` tears down the sandboxed process tree.
 
+## Known Windows issue: Python `tempfile` private directories
+
+Python 3.12.4+ changed Windows `os.mkdir(path, 0o700)` to create a protected
+DACL for private directories. `tempfile.mkdtemp()` uses that mode, so a Python
+process running under the non-elevated Windows backend can create a directory
+inside a writable root and then fail to create files inside that new directory:
+
+```powershell
+yj-sandbox-run `
+  --workspace-root C:\work\ws `
+  --writable C:\work\scratch `
+  --temp `
+  --cwd C:\work\ws `
+  -- python -c "import pathlib,tempfile; d=pathlib.Path(tempfile.mkdtemp(dir=r'C:\work\scratch')); (d/'x.txt').write_text('ok')"
+```
+
+This is a Python/Windows ACL interaction, not an npm-style cache issue. The
+directory created by `mkdtemp()` does not inherit the writable-root capability
+ACE, so the restricted token cannot satisfy the write check for child files.
+Tools such as `pip` often use `pip-unpack-*` and `pip-build-tracker-*`
+directories created through this path.
+
+For Python and pip workloads, the recommended workaround is for the caller to
+inject a Python-specific compatibility layer, for example a `sitecustomize.py`
+on `PYTHONPATH`, that only adjusts `0o700` directory creation under the known
+writable scratch/cache/venv roots so those directories inherit the parent ACL.
+Keep that workaround outside `yj-sandbox` unless you explicitly want Python
+runtime behavior to be changed for all sandboxed commands.
+
 ## Library
 
 ```rust
