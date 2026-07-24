@@ -1,6 +1,6 @@
 [package]
 name = "yj-sandbox"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "Apache-2.0"
 description = "Windows restricted-token and macOS Seatbelt sandbox (vendored & decoupled from openai/codex)"
