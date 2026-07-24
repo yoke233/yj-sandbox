@@ -66,6 +66,8 @@ mod desktop;
 #[allow(dead_code)]
 mod env;
 #[cfg(windows)]
+mod job;
+#[cfg(windows)]
 #[allow(dead_code)]
 mod logging;
 #[cfg(windows)]
@@ -123,11 +125,11 @@ mod windows_impl {
     use super::spawn_prep::prepare_legacy_spawn_context;
     use anyhow::Result;
     use std::collections::HashMap;
-    use std::ffi::c_void;
     use std::io;
     use std::io::Write;
     use std::path::Path;
     use std::ptr;
+    use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
     use windows_sys::Win32::Foundation::CloseHandle;
@@ -135,12 +137,6 @@ mod windows_impl {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
     use windows_sys::Win32::Foundation::SetHandleInformation;
-    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-    use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
-    use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
-    use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
-    use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
     use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::GetExitCodeProcess;
     use windows_sys::Win32::System::Threading::INFINITE;
@@ -192,30 +188,6 @@ mod windows_impl {
         }
     }
 
-    /// Create a job object whose members are killed when its last handle
-    /// closes. The sandboxed child (and everything it spawns) is assigned to
-    /// it so the whole tree dies with this process instead of orphaning
-    /// grandchildren when only the direct child is terminated.
-    unsafe fn create_kill_on_close_job() -> Option<HANDLE> {
-        let job = CreateJobObjectW(ptr::null(), ptr::null());
-        if job == 0 {
-            return None;
-        }
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let ok = SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &info as *const _ as *const c_void,
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        );
-        if ok == 0 {
-            CloseHandle(job);
-            return None;
-        }
-        Some(job)
-    }
-
     unsafe fn setup_stdio_pipes() -> io::Result<PipeHandles> {
         let mut in_r: HANDLE = 0;
         let mut in_w: HANDLE = 0;
@@ -223,25 +195,35 @@ mod windows_impl {
         let mut out_w: HANDLE = 0;
         let mut err_r: HANDLE = 0;
         let mut err_w: HANDLE = 0;
-        if CreatePipe(&mut in_r, &mut in_w, ptr::null_mut(), 0) == 0 {
-            return Err(io::Error::from_raw_os_error(GetLastError() as i32));
+        let result = (|| {
+            if CreatePipe(&mut in_r, &mut in_w, ptr::null_mut(), 0) == 0 {
+                return Err(io::Error::from_raw_os_error(GetLastError() as i32));
+            }
+            if CreatePipe(&mut out_r, &mut out_w, ptr::null_mut(), 0) == 0 {
+                return Err(io::Error::from_raw_os_error(GetLastError() as i32));
+            }
+            if CreatePipe(&mut err_r, &mut err_w, ptr::null_mut(), 0) == 0 {
+                return Err(io::Error::from_raw_os_error(GetLastError() as i32));
+            }
+            if SetHandleInformation(in_r, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
+                return Err(io::Error::from_raw_os_error(GetLastError() as i32));
+            }
+            if SetHandleInformation(out_w, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
+                return Err(io::Error::from_raw_os_error(GetLastError() as i32));
+            }
+            if SetHandleInformation(err_w, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
+                return Err(io::Error::from_raw_os_error(GetLastError() as i32));
+            }
+            Ok(((in_r, in_w), (out_r, out_w), (err_r, err_w)))
+        })();
+        if result.is_err() {
+            for handle in [in_r, in_w, out_r, out_w, err_r, err_w] {
+                if handle != 0 {
+                    CloseHandle(handle);
+                }
+            }
         }
-        if CreatePipe(&mut out_r, &mut out_w, ptr::null_mut(), 0) == 0 {
-            return Err(io::Error::from_raw_os_error(GetLastError() as i32));
-        }
-        if CreatePipe(&mut err_r, &mut err_w, ptr::null_mut(), 0) == 0 {
-            return Err(io::Error::from_raw_os_error(GetLastError() as i32));
-        }
-        if SetHandleInformation(in_r, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
-            return Err(io::Error::from_raw_os_error(GetLastError() as i32));
-        }
-        if SetHandleInformation(out_w, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
-            return Err(io::Error::from_raw_os_error(GetLastError() as i32));
-        }
-        if SetHandleInformation(err_w, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
-            return Err(io::Error::from_raw_os_error(GetLastError() as i32));
-        }
-        Ok(((in_r, in_w), (out_r, out_w), (err_r, err_w)))
+        result
     }
 
     /// Run `command` to completion under a restricted-token sandbox, capturing
@@ -343,14 +325,8 @@ mod windows_impl {
             }
         };
         let pi = created.process_info;
+        let job = Arc::clone(&created.job);
         let _desktop = created;
-
-        let job = unsafe { create_kill_on_close_job() };
-        if let Some(job) = job {
-            unsafe {
-                AssignProcessToJobObject(job, pi.hProcess);
-            }
-        }
 
         unsafe {
             CloseHandle(in_r);
@@ -386,6 +362,9 @@ mod windows_impl {
                 }
                 buf.extend_from_slice(&tmp[..read_bytes as usize]);
             }
+            unsafe {
+                CloseHandle(out_r);
+            }
             let _ = tx_out.send(buf);
         });
         let t_err = std::thread::spawn(move || {
@@ -412,6 +391,9 @@ mod windows_impl {
                 }
                 buf.extend_from_slice(&tmp[..read_bytes as usize]);
             }
+            unsafe {
+                CloseHandle(err_r);
+            }
             let _ = tx_err.send(buf);
         });
 
@@ -423,9 +405,12 @@ mod windows_impl {
             unsafe {
                 GetExitCodeProcess(pi.hProcess, &mut exit_code_u32);
             }
-        } else {
-            unsafe {
-                windows_sys::Win32::System::Threading::TerminateProcess(pi.hProcess, 1);
+        }
+        if timed_out || cancelled {
+            if job.terminate().is_err() {
+                unsafe {
+                    windows_sys::Win32::System::Threading::TerminateProcess(pi.hProcess, 1);
+                }
             }
         }
 
@@ -437,12 +422,11 @@ mod windows_impl {
                 CloseHandle(pi.hProcess);
             }
             CloseHandle(security.h_token);
-            // Closing the job kills any lingering grandchildren; their pipe
-            // write ends close, letting the reader threads reach EOF below.
-            if let Some(job) = job {
-                CloseHandle(job);
-            }
         }
+        // Closing the last Job handle terminates descendants that outlived the
+        // root process and closes inherited pipe writers before reader joins.
+        drop(_desktop);
+        drop(job);
         let _ = t_out.join();
         let _ = t_err.join();
         let stdout = rx_out.recv().unwrap_or_default();

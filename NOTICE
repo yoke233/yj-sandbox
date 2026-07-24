@@ -13,7 +13,7 @@ been reduced to standalone capture paths and decoupled from the
 crates.
 
 Vendored from openai/codex at commit
-be338ee9a28ce5a1c75455343e9712aded82c70f. See SYNCING.md for how upstream
+81da9deb065d7adb283816b19b40f89bcc484276. See SYNCING.md for how upstream
 changes are tracked and re-applied.
 
 Modifications from upstream:
@@ -27,8 +27,9 @@ Modifications from upstream:
   * Replaced the macOS Seatbelt generator's Codex permission/network types with
     local lightweight equivalents.
   * Inlined `codex_utils_string::take_bytes_at_char_boundary`.
-  * Added to the capture path: a kill-on-close job object containing the
-    sandboxed process tree, and optional live streaming of child stdout/stderr
+  * Added to the capture path: a local Job Object implementation with atomic
+    process assignment, full-tree cleanup when capture completes, times out, or
+    is cancelled, and optional live streaming of child stdout/stderr
     (`stream_output` flag).
 
 Copyright (c) OpenAI. Licensed under Apache-2.0; see LICENSE.

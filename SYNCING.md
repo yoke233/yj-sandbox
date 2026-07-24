@@ -14,12 +14,12 @@ them in without re-doing the analysis each time.
 | | |
 |---|---|
 | Upstream repo | `https://github.com/openai/codex` (branch `main`) |
-| Vendored at commit | `be338ee9a28ce5a1c75455343e9712aded82c70f` |
-| `windows-sandbox-rs/src` last touched | `0b2e7b5eb1cfa74e5807a84b291e6c900eeb197d` (2026-06-04) |
+| Vendored/reviewed at commit | `81da9deb065d7adb283816b19b40f89bcc484276` |
+| `windows-sandbox-rs/src` last touched before that head | `b115de97d` (2026-07-23) |
 | Windows upstream subtree | `codex-rs/windows-sandbox-rs/src/` |
 | macOS upstream files | `codex-rs/sandboxing/src/seatbelt.rs`, `seatbelt_base_policy.sbpl`, `seatbelt_network_policy.sbpl`, `restricted_read_only_platform_defaults.sbpl` |
 
-> When you finish a sync, bump the "Vendored at commit" SHA above to the new
+> When you finish a sync, bump the "Vendored/reviewed at commit" SHA above to the new
 > upstream HEAD you synced against.
 
 ## File map
@@ -32,9 +32,8 @@ These have **no** dependency on Codex crates. If upstream changes them, you can
 usually copy the new version over and rebuild.
 
 ```
-token.rs  acl.rs  cap.rs  env.rs  process.rs  desktop.rs
-proc_thread_attr.rs  winutil.rs  path_normalization.rs
-sandbox_utils.rs  workspace_acl.rs
+token.rs  cap.rs  env.rs  desktop.rs  winutil.rs
+path_normalization.rs  sandbox_utils.rs  workspace_acl.rs
 ```
 
 ### Modified — review the upstream diff and re-apply our changes by hand
@@ -44,7 +43,10 @@ sandbox_utils.rs  workspace_acl.rs
 | `logging.rs` | Inlined `codex_utils_string::take_bytes_at_char_boundary`; deleted `current_log_file_path_for_codex_home` (used `crate::sandbox_dir`) and the test module. |
 | `allow.rs` | `compute_allow_paths_for_permissions` takes our `ResolvedWindowsSandboxPermissions`; deleted the codex-typed test module. |
 | `spawn_prep.rs` | Dropped the elevated path (`prepare_elevated_spawn_context_for_permissions`, `ElevatedSpawnContext`), the deny-read branch, `readonly_sid_str`, and the codex-typed tests. `prepare_*` take a ready `&ResolvedWindowsSandboxPermissions` instead of `(PermissionProfile, workspace_roots)`. |
-| `lib.rs` | Rewritten. Our Windows `run_sandbox_capture` ≈ upstream `windows_impl::run_windows_sandbox_capture_with_filesystem_overrides`, minus elevated/deny-read; plus a kill-on-close job object and `stream_output`. Our macOS `run_sandbox_capture` is a local capture wrapper around `seatbelt::create_seatbelt_command_args`. |
+| `acl.rs` | Keeps the standalone legacy helpers, but carries upstream explicit-vs-inherited ACE refresh and safe `DELETE`-without-`FILE_DELETE_CHILD` semantics. The local legacy application path treats ACL mutation failures as fatal. |
+| `proc_thread_attr.rs` | Carries upstream handle-list and atomic Job-list attributes plus a local Windows test. |
+| `process.rs` | Uses the local `job::JobObject` instead of `codex_utils_pty::JobObject`; keeps the standalone capture signature and no `ConsoleMode` parameter. |
+| `lib.rs` | Rewritten. Our Windows `run_sandbox_capture` ≈ upstream `windows_impl::run_windows_sandbox_capture_with_filesystem_overrides`, minus elevated/deny-read; plus atomic Job assignment, full-tree cleanup on capture completion/timeout/cancellation, and `stream_output`. Unlike upstream Codex, this bounded capture runner does not preserve background descendants after the root exits. Our macOS `run_sandbox_capture` is a local capture wrapper around `seatbelt::create_seatbelt_command_args`. |
 
 ### macOS Seatbelt vendor
 
@@ -69,6 +71,7 @@ sandbox_utils.rs  workspace_acl.rs
 
 ```
 src/bin/yj-sandbox-run/main.rs     # the CLI sidecar
+src/job.rs                         # local windows-sys port of upstream JobObject
 ```
 
 ### Intentionally NOT vendored (upstream has these; we dropped them)
@@ -86,7 +89,7 @@ OTEL) which this fork does not include.
 Assumes a local checkout of codex at `D:\project\openai-codex`.
 
 ```bash
-OLD=be338ee9a28ce5a1c75455343e9712aded82c70f   # from the baseline table above
+OLD=81da9deb065d7adb283816b19b40f89bcc484276   # from the baseline table above
 CODEX=D:/project/openai-codex
 
 git -C "$CODEX" fetch origin

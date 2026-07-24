@@ -1,6 +1,7 @@
 use crate::acl::add_allow_ace;
 use crate::acl::add_deny_write_ace;
 use crate::acl::allow_null_device;
+use crate::acl::ensure_allow_write_aces;
 use crate::allow::AllowDenyPaths;
 use crate::allow::compute_allow_paths_for_permissions;
 use crate::cap::load_or_create_cap_sids;
@@ -110,14 +111,8 @@ pub(crate) fn prepare_legacy_spawn_context(
     command: &[String],
     options: SpawnPrepOptions,
 ) -> Result<SpawnContext> {
-    let common = prepare_spawn_context_common(
-        permissions,
-        codex_home,
-        cwd,
-        env_map,
-        command,
-        options,
-    )?;
+    let common =
+        prepare_spawn_context_common(permissions, codex_home, cwd, env_map, command, options)?;
     if common.permissions.should_apply_network_block() {
         apply_no_network_to_env(env_map)?;
     }
@@ -266,19 +261,19 @@ pub(crate) fn apply_legacy_session_acl_rules(
         }
         if let Some(readonly_sid) = acl_sids.readonly_sid {
             for p in &allow {
-                let _ = add_allow_ace(p, readonly_sid.as_ptr());
+                add_allow_ace(p, readonly_sid.as_ptr())?;
             }
         } else {
             for p in &allow {
                 let Some(root_sid) = matching_root_capability(p, acl_sids.write_root_sids) else {
                     continue;
                 };
-                let _ = add_allow_ace(p, root_sid.sid.as_ptr());
+                ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()])?;
             }
         }
         for p in &deny {
             for root_sid in deny_root_capabilities_for_path(p, acl_sids.write_root_sids) {
-                let _ = add_deny_write_ace(p, root_sid.sid.as_ptr());
+                add_deny_write_ace(p, root_sid.sid.as_ptr())?;
             }
         }
         for root_sid in acl_sids.write_root_sids {
@@ -293,8 +288,8 @@ pub(crate) fn apply_legacy_session_acl_rules(
         {
             let canonical_cwd = canonicalize_path(current_dir);
             if is_command_cwd_root(&workspace_sid.root, &canonical_cwd) {
-                let _ = protect_workspace_codex_dir(current_dir, workspace_sid.sid.as_ptr());
-                let _ = protect_workspace_agents_dir(current_dir, workspace_sid.sid.as_ptr());
+                protect_workspace_codex_dir(current_dir, workspace_sid.sid.as_ptr())?;
+                protect_workspace_agents_dir(current_dir, workspace_sid.sid.as_ptr())?;
             }
         }
     }
