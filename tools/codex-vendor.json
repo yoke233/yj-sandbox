@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repo": "https://github.com/openai/codex",
+    "defaultRef": "origin/main",
+    "baselineSha": "81da9deb065d7adb283816b19b40f89bcc484276",
+    "baselineMirrors": [
+      {
+        "path": "SYNCING.md",
+        "pattern": "Vendored/reviewed at commit\\s*\\|\\s*`(?<sha>[0-9a-f]{40})`"
+      },
+      {
+        "path": "NOTICE",
+        "pattern": "Vendored from openai/codex at commit\\s+(?<sha>[0-9a-f]{40})\\."
+      }
+    ]
+  },
+  "files": [
+    { "localPath": "src/token.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/token.rs", "platform": "windows", "classification": "modified", "syncStrategy": "review", "notes": "Drops elevated-only additional restricting SIDs and upstream token tests." },
+    { "localPath": "src/cap.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/cap.rs", "platform": "windows", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Codex-free verbatim vendor." },
+    { "localPath": "src/env.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/env.rs", "platform": "windows", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Codex-free verbatim vendor." },
+    { "localPath": "src/desktop.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/desktop.rs", "platform": "windows", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Codex-free verbatim vendor." },
+    { "localPath": "src/winutil.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/winutil.rs", "platform": "windows", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Codex-free verbatim vendor." },
+    { "localPath": "src/path_normalization.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/path_normalization.rs", "platform": "cross-platform", "classification": "modified", "syncStrategy": "review", "notes": "Portable local build adds the non-Windows dead-code allowance." },
+    { "localPath": "src/sandbox_utils.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/sandbox_utils.rs", "platform": "windows", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Codex-free verbatim vendor." },
+    { "localPath": "src/workspace_acl.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/workspace_acl.rs", "platform": "windows", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Codex-free verbatim vendor." },
+
+    { "localPath": "src/logging.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/logging.rs", "platform": "windows", "classification": "modified", "syncStrategy": "review", "notes": "Preserve the inlined take_bytes_at_char_boundary and removal of Codex-home helpers/tests." },
+    { "localPath": "src/allow.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/allow.rs", "platform": "windows", "classification": "modified", "syncStrategy": "review", "notes": "Preserve local ResolvedWindowsSandboxPermissions API and removed Codex-typed tests." },
+    { "localPath": "src/spawn_prep.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/spawn_prep.rs", "platform": "windows", "classification": "modified", "syncStrategy": "review", "notes": "Preserve non-elevated, no-deny-read local permission API." },
+    { "localPath": "src/acl.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/acl.rs", "platform": "windows", "classification": "modified", "syncStrategy": "review", "notes": "Preserve legacy helpers, fatal ACL mutation failures, and safe delete semantics." },
+    { "localPath": "src/proc_thread_attr.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/proc_thread_attr.rs", "platform": "windows", "classification": "modified", "syncStrategy": "review", "notes": "Preserve local tests and omit elevated-only behavior." },
+    { "localPath": "src/process.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/process.rs", "platform": "windows", "classification": "modified", "syncStrategy": "review", "notes": "Preserve local JobObject, capture signature, and lack of ConsoleMode." },
+    { "localPath": "src/lib.rs", "upstreamPath": null, "platform": "cross-platform", "classification": "local", "syncStrategy": "never", "notes": "Stable public interface and platform dispatch; upstream capture semantics are tracked by windows_capture.rs." },
+    { "localPath": "src/windows_capture.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/lib.rs", "platform": "windows", "classification": "rewritten", "syncStrategy": "semantic", "notes": "Port relevant windows_impl capture semantics by hand; preserve bounded cleanup, stream_output, and non-elevated design." },
+    { "localPath": "src/macos_capture.rs", "upstreamPath": null, "platform": "macos", "classification": "local", "syncStrategy": "never", "notes": "Local bounded capture supervisor around the vendored Seatbelt policy generator." },
+    { "localPath": "src/unsupported_capture.rs", "upstreamPath": null, "platform": "cross-platform", "classification": "local", "syncStrategy": "never", "notes": "Local unsupported-platform adapter." },
+    { "localPath": "src/resolved_permissions.rs", "upstreamPath": "codex-rs/windows-sandbox-rs/src/resolved_permissions.rs", "platform": "cross-platform", "classification": "rewritten", "syncStrategy": "semantic", "notes": "Review writable-root resolution and protected-subdirectory semantics only." },
+    { "localPath": "src/absolute_path.rs", "upstreamPath": null, "platform": "cross-platform", "classification": "rewritten", "syncStrategy": "semantic", "notes": "Local subset of codex_utils_absolute_path; no single vendored upstream file." },
+    { "localPath": "src/macos_permissions.rs", "upstreamPath": null, "platform": "macos", "classification": "rewritten", "syncStrategy": "semantic", "notes": "Local subset of Codex filesystem and network policy types." },
+
+    { "localPath": "src/seatbelt_base_policy.sbpl", "upstreamPath": "codex-rs/sandboxing/src/seatbelt_base_policy.sbpl", "platform": "macos", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Verbatim upstream profile; smoke test on macOS after overwrite." },
+    { "localPath": "src/seatbelt_network_policy.sbpl", "upstreamPath": "codex-rs/sandboxing/src/seatbelt_network_policy.sbpl", "platform": "macos", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Verbatim upstream profile; smoke test on macOS after overwrite." },
+    { "localPath": "src/restricted_read_only_platform_defaults.sbpl", "upstreamPath": "codex-rs/sandboxing/src/restricted_read_only_platform_defaults.sbpl", "platform": "macos", "classification": "verbatim", "syncStrategy": "overwrite", "notes": "Verbatim upstream profile; smoke test on macOS after overwrite." },
+    { "localPath": "src/seatbelt.rs", "upstreamPath": "codex-rs/sandboxing/src/seatbelt.rs", "platform": "macos", "classification": "modified", "syncStrategy": "review", "notes": "Preserve local imports, NetworkProxy shim, and local permission/absolute-path types." },
+
+    { "localPath": "src/bin/yj-sandbox-run/main.rs", "upstreamPath": null, "platform": "cross-platform", "classification": "local", "syncStrategy": "never", "notes": "Local CLI sidecar." },
+    { "localPath": "src/job.rs", "upstreamPath": null, "platform": "windows", "classification": "local", "syncStrategy": "never", "notes": "Local windows-sys port of upstream JobObject." },
+
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/setup.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated backend; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/setup_error.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated backend; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/identity.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Separate sandbox identity; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/deny_read_acl.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Deny-read backend; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/deny_read_state.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Deny-read backend; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/deny_read_resolver.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Deny-read backend; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/elevated*", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated backend pathspec; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/conpty", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "ConPTY backend directory; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/unified_exec", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Unified execution backend directory; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/wfp*", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "WFP network backend pathspec; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/audit.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated backend; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/hide_users.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated backend; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/dpapi.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated backend; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/helper_materialization.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated helper materialization; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/ssh_config_dependencies.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Codex integration; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/bin/setup_main.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated setup binary; intentionally omitted." },
+    { "localPath": null, "upstreamPath": "codex-rs/windows-sandbox-rs/src/bin/command_runner.rs", "platform": "windows", "classification": "omitted", "syncStrategy": "never", "notes": "Elevated command runner binary; intentionally omitted." }
+  ]
+}

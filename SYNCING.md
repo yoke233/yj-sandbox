@@ -1,13 +1,15 @@
 # Syncing from upstream Codex
 
-This crate is a **manual vendor** (not a git fork or submodule) of subsets of
-`openai/codex`:
+This crate is a **manifest-driven manual vendor** (not a git fork or submodule)
+of subsets of `openai/codex`:
 
 - Windows: `codex-rs/windows-sandbox-rs`
 - macOS: `codex-rs/sandboxing/src/seatbelt.rs` and its SBPL profiles
 
-Upstream occasionally ships sandbox security fixes; this doc is how you pull
-them in without re-doing the analysis each time.
+Upstream occasionally ships sandbox security fixes. The canonical path map and
+sync policy live in `tools/codex-vendor.json`; `tools/sync-codex.ps1` compares
+that map with an exact upstream commit and only auto-copies files proven to be
+verbatim.
 
 ## Vendor baseline (update after every sync)
 
@@ -19,34 +21,38 @@ them in without re-doing the analysis each time.
 | Windows upstream subtree | `codex-rs/windows-sandbox-rs/src/` |
 | macOS upstream files | `codex-rs/sandboxing/src/seatbelt.rs`, `seatbelt_base_policy.sbpl`, `seatbelt_network_policy.sbpl`, `restricted_read_only_platform_defaults.sbpl` |
 
-> When you finish a sync, bump the "Vendored/reviewed at commit" SHA above to the new
-> upstream HEAD you synced against.
+> When you finish a sync, bump the SHA in `tools/codex-vendor.json`, this table,
+> and `NOTICE`. The checker refuses to run if these mirrors disagree.
 
 ## File map
 
-`OURS = src/<file>` ← `UP = codex-rs/windows-sandbox-rs/src/<file>` unless noted.
+`tools/codex-vendor.json` is authoritative. Every entry declares the local and
+upstream paths, platform, classification, sync strategy, and the local behavior
+that must be preserved.
 
 ### Verbatim vendor — codex-free, safe to overwrite then re-check
 
-These have **no** dependency on Codex crates. If upstream changes them, you can
-usually copy the new version over and rebuild.
+These have **no** local edits or dependency on Codex crates. The sync tool
+hashes the local file against the recorded baseline before overwriting it, then
+hashes the result against the target commit.
 
 ```
-token.rs  cap.rs  env.rs  desktop.rs  winutil.rs
-path_normalization.rs  sandbox_utils.rs  workspace_acl.rs
+cap.rs  env.rs  desktop.rs  winutil.rs  sandbox_utils.rs  workspace_acl.rs
 ```
 
 ### Modified — review the upstream diff and re-apply our changes by hand
 
 | File | What we changed (must be preserved) |
 |---|---|
+| `token.rs` | Drops the elevated-only additional-restricting-SID parameters and upstream tests. |
+| `path_normalization.rs` | Adds a non-Windows dead-code allowance so the portable crate remains warning-free. |
 | `logging.rs` | Inlined `codex_utils_string::take_bytes_at_char_boundary`; deleted `current_log_file_path_for_codex_home` (used `crate::sandbox_dir`) and the test module. |
 | `allow.rs` | `compute_allow_paths_for_permissions` takes our `ResolvedWindowsSandboxPermissions`; deleted the codex-typed test module. |
 | `spawn_prep.rs` | Dropped the elevated path (`prepare_elevated_spawn_context_for_permissions`, `ElevatedSpawnContext`), the deny-read branch, `readonly_sid_str`, and the codex-typed tests. `prepare_*` take a ready `&ResolvedWindowsSandboxPermissions` instead of `(PermissionProfile, workspace_roots)`. |
 | `acl.rs` | Keeps the standalone legacy helpers, but carries upstream explicit-vs-inherited ACE refresh and safe `DELETE`-without-`FILE_DELETE_CHILD` semantics. The local legacy application path treats ACL mutation failures as fatal. |
 | `proc_thread_attr.rs` | Carries upstream handle-list and atomic Job-list attributes plus a local Windows test. |
 | `process.rs` | Uses the local `job::JobObject` instead of `codex_utils_pty::JobObject`; keeps the standalone capture signature and no `ConsoleMode` parameter. |
-| `lib.rs` | Rewritten. Our Windows `run_sandbox_capture` ≈ upstream `windows_impl::run_windows_sandbox_capture_with_filesystem_overrides`, minus elevated/deny-read; plus atomic Job assignment, full-tree cleanup on capture completion/timeout/cancellation, and `stream_output`. Unlike upstream Codex, this bounded capture runner does not preserve background descendants after the root exits. Our macOS `run_sandbox_capture` is a local capture wrapper around `seatbelt::create_seatbelt_command_args`. |
+| `windows_capture.rs` | Rewritten from upstream `lib.rs::windows_impl`. Preserves the standalone, non-elevated API, atomic Job assignment, full-tree cleanup on completion/timeout/cancellation, and `stream_output`. Unlike upstream Codex, this bounded runner does not preserve background descendants after the root exits. |
 
 ### macOS Seatbelt vendor
 
@@ -63,6 +69,8 @@ path_normalization.rs  sandbox_utils.rs  workspace_acl.rs
 
 | File | Notes |
 |---|---|
+| `src/lib.rs` | Stable public interface and platform dispatch. Upstream capture changes belong in the platform supervisor, not here. |
+| `windows_capture.rs` | Windows capture supervisor described above; semantically review upstream `windows-sandbox-rs/src/lib.rs`. |
 | `resolved_permissions.rs` | Upstream wraps `codex_protocol::FileSystemSandboxPolicy`. Ours is self-contained (cwd-aware workspace roots + extra writable roots + temp; always deny `.git`/`.codex`/`.agents`). It also absorbs Windows `setup.rs::effective_write_roots_for_permissions` and exposes macOS conversion helpers for Seatbelt. If upstream changes **writable-root resolution or the protected-subdir set**, port the behavior by hand. |
 | `absolute_path.rs` | Local subset of `codex_utils_absolute_path::AbsolutePathBuf` used by the Seatbelt vendor code. |
 | `macos_permissions.rs` | Local subset of Codex filesystem/network policy types used by the Seatbelt vendor code. |
@@ -72,6 +80,8 @@ path_normalization.rs  sandbox_utils.rs  workspace_acl.rs
 ```
 src/bin/yj-sandbox-run/main.rs     # the CLI sidecar
 src/job.rs                         # local windows-sys port of upstream JobObject
+src/macos_capture.rs               # local bounded macOS capture supervisor
+src/unsupported_capture.rs         # unsupported-platform adapter
 ```
 
 ### Intentionally NOT vendored (upstream has these; we dropped them)
@@ -86,37 +96,53 @@ OTEL) which this fork does not include.
 
 ## Sync workflow
 
-Assumes a local checkout of codex at `D:\project\openai-codex`.
+Assumes a local checkout of Codex at `D:\project\openai-codex`.
 
-```bash
-OLD=81da9deb065d7adb283816b19b40f89bcc484276   # from the baseline table above
-CODEX=D:/project/openai-codex
+```powershell
+# Fetch explicitly, compare the manifest baseline with origin/main, and report.
+.\tools\sync-codex.ps1 `
+  -CodexPath D:\project\openai-codex `
+  -Fetch
 
-git -C "$CODEX" fetch origin
-NEW=$(git -C "$CODEX" rev-parse origin/main)
+# After reviewing the report, copy only changed verbatim files from the exact
+# target commit. Modified and rewritten files are never overwritten.
+.\tools\sync-codex.ps1 `
+  -CodexPath D:\project\openai-codex `
+  -TargetRef origin/main `
+  -ApplyVerbatim
 
-# 1. Did anything in the subtree change since our baseline?
-git -C "$CODEX" log --oneline "$OLD..$NEW" -- codex-rs/windows-sandbox-rs/src/
-
-# 2. Per-file upstream diff (focus on the files we actually vendor)
-git -C "$CODEX" diff "$OLD..$NEW" -- codex-rs/windows-sandbox-rs/src/token.rs
-# ...repeat for each file in the map above.
+# Machine-readable output for CI or other tooling.
+.\tools\sync-codex.ps1 `
+  -CodexPath D:\project\openai-codex `
+  -TargetRef origin/main `
+  -Json
 ```
+
+Exit codes are part of the tool contract:
+
+- `0`: no mapped upstream change.
+- `1`: changes found (including after safe verbatim copies); review and baseline
+  advancement are still required.
+- `2`: manifest, path, ancestry, local-drift, or decoupling invariant failed;
+  nothing is copied.
+- `3`: Git/archive/filesystem tooling failed.
 
 Then:
 
-1. **Verbatim files**: if changed and still codex-free, copy over and rebuild.
-   Re-run `rg -n "codex_protocol|codex_utils|codex_otel|codex_network_proxy" src` — must only show comments/docs.
-2. **Modified files**: read the upstream hunks, apply the relevant ones by hand,
-   keeping the "must be preserved" changes from the table.
-3. **macOS Seatbelt**: copy SBPL files verbatim. For `seatbelt.rs`, compare
-   against upstream and port policy-generation changes while keeping local type
-   shims.
-4. **Rewritten files**: only touch `resolved_permissions.rs`,
-   `absolute_path.rs`, or `macos_permissions.rs` if upstream changed the
-   semantics they emulate.
-5. Rebuild + re-run the smoke checks below.
-6. Bump the baseline SHA in this file and in `NOTICE`; commit.
+1. Review every `modified/review` and `rewritten/semantic` item in the report
+   and port relevant behavior by hand.
+2. For macOS, smoke-test copied SBPL profiles and hand-ported `seatbelt.rs`
+   changes on macOS.
+3. Rebuild and run the checks below.
+4. Only after the review passes, advance the baseline SHA in
+   `tools/codex-vendor.json`, this file, and `NOTICE`.
+
+The syncer's own isolated-repository test is:
+
+```powershell
+# PowerShell 7+ is required.
+.\tools\test-sync-codex.ps1
+```
 
 ## Decoupling invariants (must hold after every sync)
 
@@ -124,6 +150,14 @@ Then:
   `codex_utils_absolute_path`, `codex_utils_string`, `codex_network_proxy`,
   `codex_core`.
   Check: `rg -n "codex_" src` returns only comments.
+- A `verbatim/overwrite` local file must match either the recorded baseline or
+  the requested target blob exactly. Any third state is local drift and blocks
+  all copying.
+- Before applying multiple verbatim updates, every source is validated and
+  every destination is backed up. A failed application restores the complete
+  batch.
+- Manifest destinations may not cross symlinks or junctions.
+- The recorded baseline must exist and be an ancestor of the requested target.
 - Non-elevated path only — do not pull in elevated/WFP/deny-read/ConPTY code.
 - Security model unchanged: OS-enforced **write** isolation and full-disk
   **read** by default. Windows network block remains soft; macOS network block
