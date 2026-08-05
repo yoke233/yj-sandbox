@@ -66,7 +66,8 @@ Windows archive is larger because it contains all three files.
 
 ## CLI
 
-The public option names and validation follow current `codex sandbox windows`:
+The public option names and validation follow current `codex sandbox windows`,
+with Codex's shared repeatable `--add-dir` option exposed for standalone use:
 
 ```text
 yj-sandbox-run [OPTIONS] [COMMAND]...
@@ -77,6 +78,7 @@ yj-sandbox-run [OPTIONS] [COMMAND]...
   -P, --permissions-profile <NAME>
   -p, --profile <NAME>
   -C, --cd <DIR>                          requires --permissions-profile
+      --add-dir <DIR>                     repeatable; relative to the command cwd
       --include-managed-config            requires --permissions-profile
   -c, --config <key=value>                windows.sandbox override in Codex form
 ```
@@ -84,7 +86,8 @@ yj-sandbox-run [OPTIONS] [COMMAND]...
 This standalone build exposes the two upstream built-in managed profiles:
 `:workspace` (default) and `:read-only`. Backend selection uses the upstream
 configuration key. `elevated` and `unelevated` retain their upstream meanings;
-`gemini` is the local default:
+`gemini` is the local default. Like Codex, `--add-dir` extends a writable
+workspace profile and is ignored with a warning for `:read-only`.
 
 Named permission profiles and Codex's managed-requirements loader are not linked
 into this standalone crate. `--include-managed-config`, non-built-in permission
@@ -95,6 +98,13 @@ instead of being silently ignored.
 # Gemini-compatible Low Integrity backend (default)
 & .\bin\yj-sandbox-run.exe `
   -P :workspace -C C:\work\app -- cmd.exe /c "npm test"
+
+# Add multiple writable directories using the upstream repeatable flag
+& .\bin\yj-sandbox-run.exe `
+  -P :workspace -C C:\work\app `
+  --add-dir D:\cache `
+  --add-dir D:\output `
+  -- cmd.exe /c "npm test"
 
 # Upstream-compatible unelevated restricted-token backend
 & .\bin\yj-sandbox-run.exe `

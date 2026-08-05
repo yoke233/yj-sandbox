@@ -49,6 +49,15 @@ try {
     Assert-True ($LASTEXITCODE -eq 0) 'whoami /groups must exit 0'
     Assert-True (($groups -join "`n") -match 'S-1-16-4096') 'child token must be Low Integrity'
 
+    $env:YJ_GEMINI_ADD_DIR_FILE = Join-Path $extraRoot 'add-dir-write.txt'
+    $relativeExtraRoot = Join-Path '..' (Split-Path -Leaf $extraRoot)
+    & $sandbox -P ':workspace' -C $workspace --add-dir $relativeExtraRoot -- `
+        powershell.exe -NoProfile -Command `
+        'Set-Content -LiteralPath $env:YJ_GEMINI_ADD_DIR_FILE -Value add-dir'
+    Assert-True ($LASTEXITCODE -eq 0) '--add-dir write must succeed'
+    Assert-True ((Get-Content -LiteralPath $env:YJ_GEMINI_ADD_DIR_FILE) -eq 'add-dir') `
+        'relative --add-dir must resolve against sandbox cwd'
+
     $state = @{
         sandboxCwd = $workspace
         permissionProfile = @{
@@ -121,6 +130,7 @@ finally {
     foreach ($name in @(
         'YJ_GEMINI_WORKSPACE_FILE',
         'YJ_GEMINI_EXTRA_FILE',
+        'YJ_GEMINI_ADD_DIR_FILE',
         'YJ_GEMINI_TEMP_FILE',
         'YJ_GEMINI_OUTSIDE_FILE',
         'YJ_GEMINI_CHILD_FILE'

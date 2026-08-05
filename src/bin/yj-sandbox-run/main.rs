@@ -48,6 +48,10 @@ struct WindowsCommand {
     )]
     cwd: Option<PathBuf>,
 
+    /// Additional directories that should be writable alongside the primary workspace.
+    #[arg(long = "add-dir", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    add_dir: Vec<PathBuf>,
+
     /// Include managed requirements while resolving an explicit permissions profile.
     #[arg(
         long = "include-managed-config",
@@ -234,6 +238,36 @@ fn native_path(raw: &str) -> Result<PathBuf, String> {
     Err(format!("sandbox state path is not absolute: {raw}"))
 }
 
+fn resolve_add_dirs(add_dirs: &[PathBuf], cwd: &Path) -> Vec<PathBuf> {
+    let mut resolved = Vec::with_capacity(add_dirs.len());
+    for path in add_dirs {
+        let path = if path.is_absolute() {
+            path.clone()
+        } else {
+            cwd.join(path)
+        };
+        let path = dunce::canonicalize(&path).unwrap_or(path);
+        if !resolved.contains(&path) {
+            resolved.push(path);
+        }
+    }
+    resolved
+}
+
+fn warn_ignored_add_dirs(add_dirs: &[PathBuf]) {
+    if add_dirs.is_empty() {
+        return;
+    }
+    let joined = add_dirs
+        .iter()
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!(
+        "warning: ignoring --add-dir ({joined}) because the effective permissions do not allow additional writable roots"
+    );
+}
+
 fn resolve_permissions(
     command: &WindowsCommand,
     cwd: &Path,
@@ -244,10 +278,13 @@ fn resolve_permissions(
         .unwrap_or(":workspace");
     let block_network = true;
     match profile {
-        ":read-only" => Ok(ResolvedWindowsSandboxPermissions::read_only(block_network)),
+        ":read-only" => {
+            warn_ignored_add_dirs(&command.add_dir);
+            Ok(ResolvedWindowsSandboxPermissions::read_only(block_network))
+        }
         ":workspace" => Ok(ResolvedWindowsSandboxPermissions::workspace_write(
             vec![cwd.to_path_buf()],
-            Vec::new(),
+            resolve_add_dirs(&command.add_dir, cwd),
             true,
             block_network,
         )),
@@ -272,6 +309,7 @@ fn resolve_sandbox_state(
     raw: &str,
     additional_readable_roots: &[PathBuf],
     disable_network: bool,
+    add_dirs: &[PathBuf],
 ) -> Result<ResolvedCommandState, String> {
     let value: serde_json::Value = serde_json::from_str(raw)
         .map_err(|err| format!("invalid --sandbox-state-json value: {err}"))?;
@@ -301,6 +339,7 @@ fn resolve_sandbox_state(
             }
             None => return Err("external permission profile is missing network".to_string()),
         }
+        warn_ignored_add_dirs(add_dirs);
         return Ok(ResolvedCommandState {
             cwd,
             permissions: ResolvedWindowsSandboxPermissions::read_only(true),
@@ -458,6 +497,15 @@ fn resolve_sandbox_state(
     let workspace_roots = workspace_write
         .then(|| vec![cwd.clone()])
         .unwrap_or_default();
+    if workspace_write || !extra_writable_roots.is_empty() || include_temp {
+        for root in resolve_add_dirs(add_dirs, &cwd) {
+            if !extra_writable_roots.contains(&root) {
+                extra_writable_roots.push(root);
+            }
+        }
+    } else {
+        warn_ignored_add_dirs(add_dirs);
+    }
     let permissions = if full_disk_read {
         if workspace_roots.is_empty() && extra_writable_roots.is_empty() && !include_temp {
             ResolvedWindowsSandboxPermissions::read_only(block_network)
@@ -586,6 +634,7 @@ fn run() -> Result<i32, String> {
             raw,
             &command.sandbox_state.sandbox_state_readable_root,
             command.sandbox_state.sandbox_state_disable_network,
+            &command.add_dir,
         )?,
         None => {
             let cwd = command.cwd.clone().unwrap_or(
@@ -709,6 +758,10 @@ mod tests {
             ":workspace",
             "-C",
             r"C:\workspace",
+            "--add-dir",
+            r"C:\cache",
+            "--add-dir",
+            r"D:\output",
             "--include-managed-config",
             "--",
             "cmd.exe",
@@ -717,7 +770,53 @@ mod tests {
         ])
         .expect("parse");
         assert_eq!(parsed.permissions_profile.as_deref(), Some(":workspace"));
+        assert_eq!(
+            parsed.add_dir,
+            vec![PathBuf::from(r"C:\cache"), PathBuf::from(r"D:\output")]
+        );
         assert_eq!(parsed.command[0], "cmd.exe");
+    }
+
+    #[test]
+    fn add_dir_extends_workspace_roots_and_dedupes_relative_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().join("frontend");
+        let backend = temp.path().join("backend");
+        std::fs::create_dir_all(&cwd).expect("create frontend");
+        std::fs::create_dir_all(&backend).expect("create backend");
+        let command = WindowsCommand::try_parse_from([
+            "yj-sandbox-run",
+            "-P",
+            ":workspace",
+            "-C",
+            cwd.to_str().expect("cwd utf8"),
+            "--add-dir",
+            "../backend",
+            "--add-dir",
+            backend.to_str().expect("backend utf8"),
+            "--",
+            "cmd.exe",
+        ])
+        .expect("parse");
+
+        let permissions = resolve_permissions(&command, &cwd).expect("resolve permissions");
+        let roots = permissions.writable_roots_for_cwd(&cwd, &HashMap::new());
+        let canonical_cwd = dunce::canonicalize(&cwd).expect("canonical cwd");
+        let canonical_backend = dunce::canonicalize(&backend).expect("canonical backend");
+        assert_eq!(
+            roots
+                .iter()
+                .filter(|root| root.root == canonical_cwd)
+                .count(),
+            1
+        );
+        assert_eq!(
+            roots
+                .iter()
+                .filter(|root| root.root == canonical_backend)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -776,12 +875,47 @@ mod tests {
             "codexLinuxSandboxExe": null,
             "useLegacyLandlock": false
         });
-        let resolved = resolve_sandbox_state(&state.to_string(), &[], false).expect("resolve");
+        let resolved = resolve_sandbox_state(&state.to_string(), &[], false, &[]).expect("resolve");
         assert_eq!(resolved.cwd, cwd);
         assert!(resolved.permissions.has_full_disk_read_access());
         assert!(resolved.permissions.should_apply_network_block());
         assert_eq!(resolved.deny_read_paths, vec![resolved.cwd.join(".git")]);
         assert_eq!(resolved.deny_write_paths, resolved.deny_read_paths);
+    }
+
+    #[test]
+    fn add_dir_extends_writable_sandbox_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().join("workspace");
+        let extra = temp.path().join("extra");
+        std::fs::create_dir_all(&cwd).expect("create workspace");
+        std::fs::create_dir_all(&extra).expect("create extra");
+        let cwd_uri = url::Url::from_file_path(&cwd).expect("file uri");
+        let state = serde_json::json!({
+            "sandboxCwd": cwd_uri.as_str(),
+            "permissionProfile": {
+                "type": "managed",
+                "file_system": {
+                    "type": "restricted",
+                    "entries": [
+                        { "path": { "type": "special", "value": { "kind": "root" } }, "access": "read" },
+                        { "path": { "type": "special", "value": { "kind": "project_roots" } }, "access": "write" }
+                    ]
+                },
+                "network": "enabled"
+            },
+            "codexLinuxSandboxExe": null,
+            "useLegacyLandlock": false
+        });
+
+        let resolved =
+            resolve_sandbox_state(&state.to_string(), &[], false, &[PathBuf::from("../extra")])
+                .expect("resolve");
+        let roots = resolved
+            .permissions
+            .writable_roots_for_cwd(&cwd, &HashMap::new());
+        let canonical_extra = dunce::canonicalize(extra).expect("canonical extra");
+        assert!(roots.iter().any(|root| root.root == canonical_extra));
     }
 
     #[test]
@@ -807,7 +941,7 @@ mod tests {
             "codexLinuxSandboxExe": null,
             "useLegacyLandlock": false
         });
-        let resolved = resolve_sandbox_state(&state.to_string(), &[], false).expect("resolve");
+        let resolved = resolve_sandbox_state(&state.to_string(), &[], false, &[]).expect("resolve");
         let roots = resolved
             .permissions
             .writable_roots_for_cwd(cwd, &HashMap::new());
@@ -836,7 +970,7 @@ mod tests {
             "codexLinuxSandboxExe": null,
             "useLegacyLandlock": false
         });
-        assert!(resolve_sandbox_state(&state.to_string(), &[], false).is_err());
+        assert!(resolve_sandbox_state(&state.to_string(), &[], false, &[]).is_err());
     }
 
     #[test]
