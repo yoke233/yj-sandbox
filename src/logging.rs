@@ -6,23 +6,23 @@ use std::sync::OnceLock;
 use tracing_appender::rolling::RollingFileAppender;
 use tracing_appender::rolling::Rotation;
 
-/// Largest prefix of `s` that is at most `max_bytes` long and ends on a UTF-8
-/// char boundary. Inlined from Codex's `codex_utils_string`.
-fn take_bytes_at_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
 const LOG_COMMAND_PREVIEW_LIMIT: usize = 200;
 pub const LOG_FILE_PREFIX: &str = "sandbox";
 pub const LOG_FILE_SUFFIX: &str = "log";
 pub const MAX_LOG_FILES: usize = 90;
+
+fn take_bytes_at_char_boundary(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let end = value
+        .char_indices()
+        .take_while(|(index, ch)| index + ch.len_utf8() <= max_bytes)
+        .map(|(index, ch)| index + ch.len_utf8())
+        .last()
+        .unwrap_or(0);
+    &value[..end]
+}
 
 fn exe_label() -> &'static str {
     static LABEL: OnceLock<String> = OnceLock::new();
@@ -53,6 +53,10 @@ pub fn log_file_path_for_utc_date(base_dir: &Path, date: chrono::NaiveDate) -> P
 
 pub fn current_log_file_path(base_dir: &Path) -> PathBuf {
     log_file_path_for_utc_date(base_dir, chrono::Utc::now().date_naive())
+}
+
+pub fn current_log_file_path_for_codex_home(codex_home: &Path) -> PathBuf {
+    current_log_file_path(&crate::sandbox_dir(codex_home))
 }
 
 pub fn log_writer(base_dir: &Path) -> Option<RollingFileAppender> {
@@ -104,4 +108,64 @@ pub fn debug_log(msg: &str, base_dir: Option<&Path>) {
 pub fn log_note(msg: &str, base_dir: Option<&Path>) {
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     append_line(&format!("[{ts} {}] {}", exe_label(), msg), base_dir);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_does_not_panic_on_utf8_boundary() {
+        // Place a 4-byte emoji such that naive (byte-based) truncation would split it.
+        let prefix = "x".repeat(LOG_COMMAND_PREVIEW_LIMIT - 1);
+        let command = vec![format!("{prefix}😀")];
+        let result = std::panic::catch_unwind(|| preview(&command));
+        assert!(result.is_ok());
+        let previewed = result.unwrap();
+        assert!(previewed.len() <= LOG_COMMAND_PREVIEW_LIMIT);
+    }
+
+    #[test]
+    fn log_note_writes_to_daily_rolling_log() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        log_note("hello daily log", Some(tempdir.path()));
+
+        let entries = std::fs::read_dir(tempdir.path())
+            .expect("read log dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read entries");
+        assert_eq!(entries.len(), 1);
+
+        let log_path = entries[0].path();
+        let filename = log_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("utf-8 filename");
+        assert!(filename.starts_with("sandbox."));
+        assert!(filename.ends_with(".log"));
+
+        let log = std::fs::read_to_string(log_path).expect("read log");
+        assert!(log.contains("hello daily log"));
+    }
+
+    #[test]
+    fn log_file_path_for_utc_date_matches_rolling_appender_name() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 5, 21).expect("valid date");
+
+        assert_eq!(
+            log_file_path_for_utc_date(Path::new("logs"), date),
+            PathBuf::from("logs").join("sandbox.2026-05-21.log")
+        );
+    }
+
+    #[test]
+    fn current_log_file_path_for_codex_home_uses_sandbox_dir() {
+        let codex_home = Path::new("codex-home");
+
+        assert_eq!(
+            current_log_file_path_for_codex_home(codex_home),
+            current_log_file_path(&codex_home.join(".sandbox"))
+        );
+    }
 }

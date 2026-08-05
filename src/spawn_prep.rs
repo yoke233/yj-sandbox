@@ -16,9 +16,9 @@ use crate::env::normalize_null_device_env;
 use crate::logging::log_start;
 use crate::path_normalization::canonicalize_path;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
-use crate::resolved_permissions::effective_write_roots_for_permissions;
 use crate::sandbox_utils::ensure_codex_home_exists;
 use crate::sandbox_utils::inject_git_safe_directory;
+use crate::setup::effective_write_roots_for_permissions;
 use crate::token::LocalSid;
 use crate::token::create_readonly_token_with_cap;
 use crate::token::create_workspace_write_token_with_caps_from;
@@ -117,6 +117,18 @@ pub(crate) fn prepare_legacy_spawn_context(
         apply_no_network_to_env(env_map)?;
     }
     Ok(common)
+}
+
+pub(crate) fn prepare_gemini_spawn_context(
+    permissions: &ResolvedWindowsSandboxPermissions,
+    codex_home: &Path,
+    cwd: &Path,
+    env_map: &mut HashMap<String, String>,
+    command: &[String],
+    options: SpawnPrepOptions,
+) -> Result<SpawnContext> {
+    // Gemini mode deliberately allows the inherited network environment.
+    prepare_spawn_context_common(permissions, codex_home, cwd, env_map, command, options)
 }
 
 pub(crate) fn prepare_legacy_session_security(

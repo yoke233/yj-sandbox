@@ -1,149 +1,205 @@
 # yj-sandbox
 
-A small Rust sandbox runner for untrusted commands:
+A standalone Rust sandbox runner derived from the sandbox implementation in
+[`openai/codex`](https://github.com/openai/codex) (Apache-2.0).
 
-- **Windows**: non-elevated restricted-token sandbox. Writes are confined to
-  granted directories using a `WRITE_RESTRICTED` token plus per-root capability
-  SIDs, with no admin rights, UAC prompt, driver, or separate user account.
-- **macOS**: Seatbelt sandbox via `/usr/bin/sandbox-exec`. The same writable
-  root model is translated into an SBPL profile. This supports both
-  `x86_64-apple-darwin` and `aarch64-apple-darwin` builds.
+- **Windows** keeps both Codex backends and adds a lightweight `gemini` backend.
+  `unelevated` uses Codex's current-user restricted token; `elevated` uses
+  dedicated sandbox accounts, deny-read ACLs, Windows Filtering Platform rules,
+  and the Codex setup/command-runner helpers. `gemini` uses the current user at
+  Low Integrity and is the standalone default.
+- **macOS** uses Seatbelt through `/usr/bin/sandbox-exec`.
 
-This is a vendored and slimmed subset of
-[`openai/codex`](https://github.com/openai/codex)'s Windows and macOS sandbox
-code (Apache-2.0), reduced to the standalone capture path and decoupled from
-the Codex crates. See [`NOTICE`](./NOTICE). For how upstream changes are pulled
-in, see [`SYNCING.md`](./SYNCING.md).
+The Windows source layout, helper names, setup protocol, upstream backend
+values, and CLI option names intentionally stay close to Codex. The local
+`gemini` adapter is isolated from vendored modules. Codex-wide config,
+telemetry, UI, and API dependencies are replaced by a small standalone adapter.
+See [`SYNCING.md`](./SYNCING.md) and [`NOTICE`](./NOTICE).
 
-## Security model — read this first
+## Windows security model
 
-| Capability | Enforced? | Notes |
-|---|---|---|
-| **Write** outside granted roots | ✅ kernel-enforced | Windows ACL/restricted-token checks; macOS Seatbelt `file-write*` policy. |
-| **Read** any file | ❌ **not** restricted | Default profiles grant full-disk read. `~/.ssh`, tokens, cookies are all readable. |
-| **Network** | Platform-specific | Windows is env-based soft blocking. macOS uses Seatbelt default deny unless network is enabled. |
+| Backend | Writes | Reads | Network | Setup |
+|---|---|---|---|---|
+| `gemini` (default) | Low Integrity labels on every resolved writable root | Full disk | Direct/inherited | None |
+| `unelevated` | Restricted-token + capability ACLs | Full disk | Environment-based soft block | None |
+| `elevated` | Dedicated sandbox identity + ACLs | Supports deny-read policy | WFP/firewall rules | Administrator setup once |
 
-**Use this when your threat model is "prevent damage / fat-finger", not
-"prevent data exfiltration".** Blocking reads requires stricter split
-filesystem policies from upstream Codex that this fork has not exposed yet.
-On Windows, real network isolation requires the elevated backend (WFP), which
-this fork intentionally does not include.
+`gemini` follows Gemini CLI's narrow Windows contract: it calls
+`CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)`, lowers the token to Low
+Integrity, applies inheritable Low labels to the workspace, extra writable
+roots, and configured temporary roots, and uses the existing kill-on-close Job
+Object. Reads and direct network access are intentionally unrestricted. Labels
+remain on those roots; this is intended for disposable client workspaces.
+Like Gemini CLI itself, ACL/label failures are reported as warnings and launch
+continues. The caller must own the writable roots strongly enough to change
+their labels.
 
-## How it works
+Low Integrity is the write boundary, not a session-specific path allowlist. A
+Gemini child can also write another object that was already labeled Low when
+the current user's DACL permits it. Consequently `:read-only` and
+`--sandbox-state-disable-network` are not strict enforcement controls in the
+`gemini` backend. Select `unelevated` or `elevated` for a restricted-token
+read-only contract; only `elevated` provides the WFP-backed network boundary.
 
-### Windows
+The original Schannel `curl` failure remains reproducible under upstream-style
+`unelevated`, but `gemini` retains the current user's Schannel context and passes
+the native curl, Git HTTPS, and npm HTTPS E2E checks.
 
-1. A random **capability SID** (`S-1-5-21-…`, backed by no real account) is
-   generated per writable root and persisted under the state dir.
-2. A `CreateRestrictedToken(WRITE_RESTRICTED | LUA_TOKEN | DISABLE_MAX_PRIVILEGE)`
-   token is built with those capability SIDs as *restricting* SIDs.
-3. An allow-write ACE for the capability SID is added to each writable root;
-   `.git` / `.codex` / `.agents` inside a root get deny-write ACEs.
-4. The command is launched with `CreateProcessAsUserW` under that token; writes
-   only succeed where an ACE grants the capability SID. Reads are unaffected.
+## Windows package layout
 
-Writable roots are **cwd-aware**: of the declared `--workspace-root`s, only the
-one containing the working directory is made writable (least privilege); extra
-`--writable` roots and `--temp` are always writable.
+The release layout follows upstream Codex. Windows has three executable roles,
+but only the main CLI belongs on `PATH`:
 
-### macOS
-
-1. The same resolved writable roots are converted to Seatbelt `file-write*`
-   allow rules.
-2. The base profile starts with `(deny default)`, then allows process basics,
-   read access, PTYs, readonly preferences, and platform services needed by
-   common tools.
-3. `.git`, `.codex`, and `.agents` under writable roots stay read-only via
-   Seatbelt path exclusions, even if they do not exist yet.
-4. The command is launched as `/usr/bin/sandbox-exec -p <profile> -- <command>`.
-
-## Usage
-
-```
-yj-sandbox-run [OPTIONS] -- <command> [args...]
-
-  --workspace-root <DIR>   cwd-aware writable project root (repeatable)
-  --writable <DIR>         always-writable extra root (repeatable)
-  --temp                   also make TEMP/TMP or TMPDIR writable
-  --read-only              no writable roots (read-only sandbox)
-  --no-network             apply the env-based soft network block
-  --cwd <DIR>              working directory (default: current dir)
-  --state-dir <DIR>        capability-SID + log dir (default: %LOCALAPPDATA%\yj-sandbox)
-  --private-desktop        run on a private desktop/window station (Windows)
-  --timeout-ms <N>         terminate the command after N ms
+```text
+yj-sandbox-v0.5.0-windows-x86_64/
+├── bin/
+│   └── yj-sandbox-run.exe
+└── codex-resources/
+    ├── codex-command-runner.exe
+    └── codex-windows-sandbox-setup.exe
 ```
 
-Examples:
+The main process locates helpers next to the package and copies the command
+runner into the versioned sandbox state directory when needed. The helpers are
+separate binaries, so their code does not inflate `yj-sandbox-run.exe`; the
+Windows archive is larger because it contains all three files.
+
+## CLI
+
+The public option names and validation follow current `codex sandbox windows`:
+
+```text
+yj-sandbox-run [OPTIONS] [COMMAND]...
+
+  --sandbox-state-json <JSON>
+  --sandbox-state-readable-root <PATH>   repeatable; requires state JSON
+  --sandbox-state-disable-network        requires state JSON
+  -P, --permissions-profile <NAME>
+  -p, --profile <NAME>
+  -C, --cd <DIR>                          requires --permissions-profile
+      --include-managed-config            requires --permissions-profile
+  -c, --config <key=value>                windows.sandbox override in Codex form
+```
+
+This standalone build exposes the two upstream built-in managed profiles:
+`:workspace` (default) and `:read-only`. Backend selection uses the upstream
+configuration key. `elevated` and `unelevated` retain their upstream meanings;
+`gemini` is the local default:
+
+Named permission profiles and Codex's managed-requirements loader are not linked
+into this standalone crate. `--include-managed-config`, non-built-in permission
+profiles, and `-c` keys other than `windows.sandbox` therefore fail explicitly
+instead of being silently ignored.
 
 ```powershell
-# Confine writes to a project; run a build
-yj-sandbox-run --workspace-root C:\proj\app --cwd C:\proj\app -- cmd /c "npm run build"
+# Gemini-compatible Low Integrity backend (default)
+& .\bin\yj-sandbox-run.exe `
+  -P :workspace -C C:\work\app -- cmd.exe /c "npm test"
 
-# Read-only: command can read anything but write nothing
-yj-sandbox-run --read-only --cwd C:\proj\app -- cmd /c "npm test"
+# Upstream-compatible unelevated restricted-token backend
+& .\bin\yj-sandbox-run.exe `
+  -c 'windows.sandbox="unelevated"' `
+  -P :workspace -C C:\work\app -- cmd.exe /c "npm test"
+
+# Elevated backend after setup
+& .\bin\yj-sandbox-run.exe `
+  -c 'windows.sandbox="elevated"' `
+  -P :workspace -C C:\work\app -- cmd.exe /c "npm test"
 ```
 
-Exit code is the child's exit code (`192` on timeout, `2` on argument error).
-Child stdout/stderr are streamed live to this process's stdout/stderr. On
-Windows, the child runs inside a kill-on-close job object so killing
-`yj-sandbox-run` tears down the sandboxed process tree.
+The same value may be stored in `$CODEX_HOME/config.toml` (or
+`$HOME/.codex/config.toml`):
 
-## Known Windows issue: Python `tempfile` private directories
+```toml
+[windows]
+sandbox = "gemini" # or "unelevated" / "elevated"
+```
 
-Python 3.12.4+ changed Windows `os.mkdir(path, 0o700)` to create a protected
-DACL for private directories. `tempfile.mkdtemp()` uses that mode, so a Python
-process running under the non-elevated Windows backend can create a directory
-inside a writable root and then fail to create files inside that new directory:
+`-p NAME` layers `$CODEX_HOME/NAME.config.toml` over the base file for backend
+selection, matching the upstream file naming convention. A later `-c` override
+wins.
+
+## Elevated setup
+
+Run setup from an administrator PowerShell. The command name and arguments
+match current Codex:
 
 ```powershell
-yj-sandbox-run `
-  --workspace-root C:\work\ws `
-  --writable C:\work\scratch `
-  --temp `
-  --cwd C:\work\ws `
-  -- python -c "import pathlib,tempfile; d=pathlib.Path(tempfile.mkdtemp(dir=r'C:\work\scratch')); (d/'x.txt').write_text('ok')"
+& .\bin\yj-sandbox-run.exe setup --elevated --current-user
 ```
 
-This is a Python/Windows ACL interaction, not an npm-style cache issue. The
-directory created by `mkdtemp()` does not inherit the writable-root capability
-ACE, so the restricted token cannot satisfy the write check for child files.
-Tools such as `pip` often use `pip-unpack-*` and `pip-build-tracker-*`
-directories created through this path.
+Managed deployment may specify the target identity explicitly:
 
-For Python and pip workloads, the recommended workaround is for the caller to
-inject a Python-specific compatibility layer, for example a `sitecustomize.py`
-on `PYTHONPATH`, that only adjusts `0o700` directory creation under the known
-writable scratch/cache/venv roots so those directories inherit the parent ACL.
-Keep that workaround outside `yj-sandbox` unless you explicitly want Python
-runtime behavior to be changed for all sandboxed commands.
+```powershell
+& .\bin\yj-sandbox-run.exe setup --elevated `
+  --user 'DOMAIN\alice' `
+  --codex-home 'C:\Users\alice\.codex'
+```
+
+Successful setup persists `windows.sandbox = "elevated"`. Setup creates local
+sandbox identities, writes protected credentials/state, configures ACLs, and
+installs Windows network restrictions. Review this operation before running it;
+building or testing the crate does not execute setup.
 
 ## Library
+
+The existing standalone capture API remains available:
 
 ```rust
 use yj_sandbox::{ResolvedSandboxPermissions, run_sandbox_capture};
 
-let perms = ResolvedSandboxPermissions::workspace_write(
-    vec![workspace_root],   // cwd-aware workspace roots
-    vec![],                 // extra always-writable roots
-    true,                   // include TEMP/TMP or TMPDIR
-    false,                  // block_network (soft)
+let permissions = ResolvedSandboxPermissions::workspace_write(
+    vec![workspace_root],
+    vec![],
+    true,
+    true,
 );
-// Last two flags: use_private_desktop, stream_output (tee child output live).
-let result = run_sandbox_capture(&perms, &state_dir, command, &cwd, env, None, None, false, false)?;
+let result = run_sandbox_capture(
+    &permissions,
+    &state_dir,
+    command,
+    &cwd,
+    env,
+    None,
+    None,
+    false,
+    false,
+)?;
 ```
+
+On Windows, `ElevatedSandboxCaptureRequest` and
+`run_windows_sandbox_capture_elevated` select the elevated capture path without
+going through the CLI.
 
 ## Build
 
-```
-cargo build --release
+```powershell
+cargo build --release --bins
 ```
 
-Windows builds produce `yj-sandbox-run.exe`. macOS builds use the same binary
-name and require `/usr/bin/sandbox-exec` at runtime. Build separately for Intel
-and Apple Silicon with `x86_64-apple-darwin` and `aarch64-apple-darwin`, or
-combine them into a universal binary outside Cargo.
+Windows produces:
+
+```text
+target/release/yj-sandbox-run.exe
+target/release/codex-command-runner.exe
+target/release/codex-windows-sandbox-setup.exe
+```
+
+Run the Windows Gemini E2E suite after building. It verifies the default mode,
+native Schannel curl, Low Integrity, multiple writable roots, outside-write
+denial, Git/npm HTTPS, nested processes, and exit-code propagation:
+
+```powershell
+& .\tools\test-gemini-e2e.ps1
+```
+
+On macOS, build only the main binary. The helper binaries are Windows-only:
+
+```text
+cargo build --release --bin yj-sandbox-run
+```
 
 ## License
 
-Apache-2.0. Derived from `openai/codex`; see [`LICENSE`](./LICENSE) and
-[`NOTICE`](./NOTICE).
+Apache-2.0. Derived from `openai/codex` with a Windows Low Integrity backend
+ported from Google Gemini CLI; see [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).

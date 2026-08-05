@@ -22,8 +22,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify release version
+        run: |
+          if ($env:GITHUB_REF_TYPE -ne 'tag') { exit 0 }
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $packageVersion = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ($tagVersion -ne $packageVersion) {
+            throw "release tag $env:GITHUB_REF_NAME does not match Cargo version $packageVersion"
+          }
+
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --bins
+
+      - name: Gemini Windows E2E
+        timeout-minutes: 5
+        run: .\tools\test-gemini-e2e.ps1 -SandboxExe .\target\release\yj-sandbox-run.exe
 
       - name: Package
         run: |
@@ -34,10 +47,14 @@ jobs:
           $packageName = "yj-sandbox-v$version-windows-x86_64"
           $dist = Join-Path $PWD "dist"
           $packageDir = Join-Path $dist $packageName
-          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
-          Copy-Item "target/release/$env:BIN_NAME.exe" $packageDir
+          $binDir = Join-Path $packageDir "bin"
+          $resourcesDir = Join-Path $packageDir "codex-resources"
+          New-Item -ItemType Directory -Path $binDir,$resourcesDir -Force | Out-Null
+          Copy-Item "target/release/$env:BIN_NAME.exe" $binDir
+          Copy-Item "target/release/codex-command-runner.exe" $resourcesDir
+          Copy-Item "target/release/codex-windows-sandbox-setup.exe" $resourcesDir
           Copy-Item README.md,LICENSE,NOTICE $packageDir
-          Compress-Archive -Path "$packageDir/*" -DestinationPath "$dist/$packageName.zip" -Force
+          Compress-Archive -LiteralPath $packageDir -DestinationPath "$dist/$packageName.zip" -Force
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,6 +85,17 @@ jobs:
           fi
           echo "/usr/local/bin" >> "$GITHUB_PATH"
 
+      - name: Verify release version
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then exit 0; fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$tag_version" != "$package_version" ]; then
+            echo "release tag $GITHUB_REF_NAME does not match Cargo version $package_version" >&2
+            exit 1
+          fi
+
       - name: Build
         run: |
           set -euo pipefail
@@ -76,8 +104,8 @@ jobs:
           elif command -v rustup >/dev/null 2>&1; then
             rustup target add x86_64-apple-darwin aarch64-apple-darwin
           fi
-          "$CARGO" build --release --target x86_64-apple-darwin
-          "$CARGO" build --release --target aarch64-apple-darwin
+          "$CARGO" build --release --bin "$BIN_NAME" --target x86_64-apple-darwin
+          "$CARGO" build --release --bin "$BIN_NAME" --target aarch64-apple-darwin
           lipo -create \
             -output target/yj-sandbox-run-universal \
             target/x86_64-apple-darwin/release/$BIN_NAME \

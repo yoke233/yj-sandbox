@@ -24,20 +24,29 @@ use crate::{
         FileSystemSandboxPolicy, NetworkSandboxPolicy, WritableRoot as MacosWritableRoot,
     },
 };
+use anyhow::Result;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Subdirectories denied write inside every writable root, matching Codex.
 const PROTECTED_SUBDIRS: &[&str] = &[".git", ".codex", ".agents"];
 
 /// A writable root plus the subpaths beneath it that must stay read-only.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowsWritableRoot {
     pub root: PathBuf,
     pub read_only_subpaths: Vec<PathBuf>,
 }
 
 /// Windows-local view of the runtime permission profile.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedSandboxPermissions {
+    /// Explicitly readable roots for the elevated backend.
+    readable_roots: Vec<PathBuf>,
+    /// Whether reads are unrestricted. The legacy backend requires this.
+    full_disk_read: bool,
+    /// Include the Windows platform roots used by upstream Codex.
+    include_platform_defaults: bool,
     /// Workspace/project roots; only the one containing the cwd becomes writable.
     workspace_roots: Vec<PathBuf>,
     /// Roots that are writable regardless of cwd.
@@ -51,10 +60,20 @@ pub struct ResolvedSandboxPermissions {
 /// Backwards-compatible name for the originally Windows-only public API.
 pub type ResolvedWindowsSandboxPermissions = ResolvedSandboxPermissions;
 
+/// Restricted-token family needed to enforce a Windows permission profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsSandboxTokenMode {
+    ReadOnlyCapability,
+    WritableRootsCapability,
+}
+
 impl ResolvedSandboxPermissions {
     /// Full-disk read, no writes anywhere.
     pub fn read_only(block_network: bool) -> Self {
         Self {
+            readable_roots: Vec::new(),
+            full_disk_read: true,
+            include_platform_defaults: true,
             workspace_roots: Vec::new(),
             extra_writable_roots: Vec::new(),
             include_temp: false,
@@ -71,6 +90,29 @@ impl ResolvedSandboxPermissions {
         block_network: bool,
     ) -> Self {
         Self {
+            readable_roots: Vec::new(),
+            full_disk_read: true,
+            include_platform_defaults: true,
+            workspace_roots,
+            extra_writable_roots,
+            include_temp,
+            block_network,
+        }
+    }
+
+    /// Restricted reads plus the same cwd-aware writable-root model.
+    pub fn restricted(
+        readable_roots: Vec<PathBuf>,
+        workspace_roots: Vec<PathBuf>,
+        extra_writable_roots: Vec<PathBuf>,
+        include_temp: bool,
+        block_network: bool,
+        include_platform_defaults: bool,
+    ) -> Self {
+        Self {
+            readable_roots,
+            full_disk_read: false,
+            include_platform_defaults,
             workspace_roots,
             extra_writable_roots,
             include_temp,
@@ -80,12 +122,46 @@ impl ResolvedSandboxPermissions {
 
     /// The restricted token grants full-disk read in every supported profile.
     pub fn has_full_disk_read_access(&self) -> bool {
-        true
+        self.full_disk_read
     }
 
     /// Whether to apply the env-based network block.
     pub fn should_apply_network_block(&self) -> bool {
         self.block_network
+    }
+
+    pub(crate) fn is_enforceable_by_windows_sandbox(&self) -> bool {
+        true
+    }
+
+    pub(crate) fn include_platform_defaults(&self) -> bool {
+        self.include_platform_defaults
+    }
+
+    pub(crate) fn readable_roots_for_cwd(&self, cwd: &Path) -> Vec<PathBuf> {
+        self.readable_roots
+            .iter()
+            .map(|root| {
+                if root.is_absolute() {
+                    root.clone()
+                } else {
+                    cwd.join(root)
+                }
+            })
+            .map(|root| canonicalize_path(&root))
+            .collect()
+    }
+
+    pub fn token_mode_for_cwd(
+        &self,
+        cwd: &Path,
+        env_map: &HashMap<String, String>,
+    ) -> Result<WindowsSandboxTokenMode> {
+        if self.writable_roots_for_cwd(cwd, env_map).is_empty() {
+            Ok(WindowsSandboxTokenMode::ReadOnlyCapability)
+        } else {
+            Ok(WindowsSandboxTokenMode::WritableRootsCapability)
+        }
     }
 
     /// Whether any write capability is in effect for this invocation.
@@ -203,17 +279,33 @@ fn protected_subpaths(root: &Path) -> Vec<PathBuf> {
 
 /// Resolve absolute `TEMP`/`TMP` directories from the child env (falling back to
 /// the parent process env).
-fn windows_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
+pub(crate) fn windows_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
     ["TEMP", "TMP"]
         .into_iter()
         .filter_map(|key| {
             env_map
-                .get(key)
-                .map(|value| PathBuf::from(value.as_str()))
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(key))
+                .map(|(_, value)| PathBuf::from(value.as_str()))
                 .or_else(|| std::env::var_os(key).map(PathBuf::from))
         })
         .filter(|path| path.is_absolute())
         .collect()
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::windows_temp_env_roots;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn temp_roots_use_case_insensitive_child_environment() {
+        let expected = PathBuf::from(r"C:\sandbox-temp");
+        let env_map = HashMap::from([("temp".to_string(), expected.display().to_string())]);
+
+        assert_eq!(windows_temp_env_roots(&env_map).first(), Some(&expected));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -271,50 +363,4 @@ fn push_macos_root(out: &mut Vec<MacosWritableRoot>, root: PathBuf) {
             .map(|name| (*name).to_string())
             .collect(),
     });
-}
-
-/// Writable roots that should receive capability ACLs.
-///
-/// Mirrors Codex's `setup::effective_write_roots_for_permissions` for the
-/// non-elevated path: when `write_roots_override` is supplied (the capture path
-/// passes the allow-set it already computed) those roots are used; otherwise the
-/// roots come from `permissions`. Roots are canonicalized, filtered to existing
-/// paths, deduped, and the sandbox state directory is never made writable.
-#[cfg(windows)]
-pub(crate) fn effective_write_roots_for_permissions(
-    permissions: &ResolvedSandboxPermissions,
-    command_cwd: &Path,
-    env_map: &HashMap<String, String>,
-    state_dir: &Path,
-    write_roots_override: Option<&[PathBuf]>,
-) -> Vec<PathBuf> {
-    let roots = match write_roots_override {
-        Some(roots) => canonical_existing(roots.iter().cloned()),
-        None => canonical_existing(
-            permissions
-                .writable_roots_for_cwd(command_cwd, env_map)
-                .into_iter()
-                .map(|root| root.root),
-        ),
-    };
-    let canonical_state = canonicalize_path(state_dir);
-    roots
-        .into_iter()
-        .filter(|root| !root.starts_with(&canonical_state))
-        .collect()
-}
-
-#[cfg(windows)]
-fn canonical_existing(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
-    let mut seen: Vec<PathBuf> = Vec::new();
-    for root in roots {
-        if !root.exists() {
-            continue;
-        }
-        let canonical = canonicalize_path(&root);
-        if !seen.iter().any(|existing| existing == &canonical) {
-            seen.push(canonical);
-        }
-    }
-    seen
 }

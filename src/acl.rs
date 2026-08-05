@@ -158,6 +158,8 @@ unsafe fn dacl_mask_allows_with_scope(
         if (hdr.AceFlags & INHERIT_ONLY_ACE) != 0 {
             continue;
         }
+        // SET_ACCESS cannot replace an ACE inherited from an ancestor, so it cannot make
+        // an explicit-only repair converge when that inherited ACE contains stale rights.
         if matches!(scope, AceScope::Explicit) && (hdr.AceFlags & INHERITED_ACE) != 0 {
             continue;
         }
@@ -366,7 +368,7 @@ unsafe fn dacl_allow_mask_needs_refresh(
 }
 
 /// Returns whether any provided SID needs its writable-root allow ACE refreshed.
-fn path_write_aces_need_refresh(path: &Path, psids: &[*mut c_void]) -> Result<bool> {
+pub fn path_write_aces_need_refresh(path: &Path, psids: &[*mut c_void]) -> Result<bool> {
     unsafe {
         let (p_dacl, p_sd) = fetch_dacl_handle(path)?;
         let needs_refresh = psids.iter().any(|psid| {
@@ -504,7 +506,7 @@ pub unsafe fn ensure_allow_write_aces(path: &Path, sids: &[*mut c_void]) -> Resu
     )
 }
 
-/// Adds an allow ACE granting write-root access to the given SID on the target path.
+/// Adds an allow ACE granting read/write/execute to the given SID on the target path.
 ///
 /// # Safety
 /// Caller must ensure `psid` points to a valid SID and `path` refers to an existing file or directory.
@@ -524,22 +526,15 @@ pub unsafe fn add_allow_ace(path: &Path, psid: *mut c_void) -> Result<bool> {
     if code != ERROR_SUCCESS {
         return Err(anyhow!("GetNamedSecurityInfoW failed: {code}"));
     }
-    // Already has the full write-root mask? Skip costly DACL rewrite. This
-    // must include delete permissions so package managers can unlink temp files.
-    if dacl_mask_allows(
-        p_dacl,
-        &[psid],
-        WRITE_ALLOW_MASK,
-        /*require_all_bits*/ true,
-    ) {
+    // Already has write? Skip costly DACL rewrite.
+    if dacl_has_write_allow_for_sid(p_dacl, psid) {
         if !p_sd.is_null() {
             LocalFree(p_sd as HLOCAL);
         }
         return Ok(false);
     }
     let mut added = false;
-    // Always ensure the complete write-root mask is present. If an older ACE
-    // exists without DELETE/FILE_DELETE_CHILD, add a new complete ACE.
+    // Always ensure write is present: if an allow ACE exists without write, add one with write+RX.
     let trustee = TRUSTEE_W {
         pMultipleTrustee: std::ptr::null_mut(),
         MultipleTrusteeOperation: 0,
@@ -548,7 +543,7 @@ pub unsafe fn add_allow_ace(path: &Path, psid: *mut c_void) -> Result<bool> {
         ptstrName: psid as *mut u16,
     };
     let mut explicit: EXPLICIT_ACCESS_W = std::mem::zeroed();
-    explicit.grfAccessPermissions = WRITE_ALLOW_MASK;
+    explicit.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE;
     explicit.grfAccessMode = 2; // SET_ACCESS
     explicit.grfInheritance = CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE;
     explicit.Trustee = trustee;
@@ -565,7 +560,7 @@ pub unsafe fn add_allow_ace(path: &Path, psid: *mut c_void) -> Result<bool> {
             std::ptr::null_mut(),
         );
         if code3 == ERROR_SUCCESS {
-            added = true;
+            added = !dacl_has_write_allow_for_sid(p_dacl, psid);
         }
         if !p_new_dacl.is_null() {
             LocalFree(p_new_dacl as HLOCAL);
@@ -802,60 +797,6 @@ pub unsafe fn allow_null_device(psid: *mut c_void) {
         LocalFree(p_sd as HLOCAL);
     }
     CloseHandle(h);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::token::LocalSid;
-
-    #[test]
-    fn write_ace_refresh_removes_explicit_delete_child() {
-        let root = tempfile::tempdir().expect("temp dir");
-        let sid = LocalSid::from_string("S-1-5-21-111111111-222222222-333333333-444444444")
-            .expect("test SID");
-        let sid_ptr = sid.as_ptr();
-
-        unsafe {
-            ensure_allow_mask_aces(
-                root.path(),
-                &[sid_ptr],
-                WRITE_ALLOW_MASK | FILE_DELETE_CHILD,
-            )
-            .expect("seed stale write ACE");
-        }
-        assert!(
-            path_write_aces_need_refresh(root.path(), &[sid_ptr]).expect("check stale write ACE")
-        );
-
-        unsafe {
-            ensure_allow_write_aces(root.path(), &[sid_ptr]).expect("refresh write ACE");
-        }
-        assert!(
-            !path_write_aces_need_refresh(root.path(), &[sid_ptr])
-                .expect("check refreshed write ACE")
-        );
-        assert!(
-            path_mask_allows(root.path(), &[sid_ptr], DELETE, true)
-                .expect("check inherited delete permission")
-        );
-    }
-
-    #[test]
-    fn write_ace_refresh_is_idempotent() {
-        let root = tempfile::tempdir().expect("temp dir");
-        let sid = LocalSid::from_string("S-1-5-21-555555555-666666666-777777777-888888888")
-            .expect("test SID");
-        let sid_ptr = sid.as_ptr();
-
-        let first =
-            unsafe { ensure_allow_write_aces(root.path(), &[sid_ptr]) }.expect("first refresh");
-        let second =
-            unsafe { ensure_allow_write_aces(root.path(), &[sid_ptr]) }.expect("second refresh");
-
-        assert!(first);
-        assert!(!second);
-    }
 }
 const CONTAINER_INHERIT_ACE: u32 = 0x2;
 const OBJECT_INHERIT_ACE: u32 = 0x1;

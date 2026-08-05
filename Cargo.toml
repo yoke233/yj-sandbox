@@ -1,6 +1,7 @@
 [package]
+build = "build.rs"
 name = "yj-sandbox"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Windows restricted-token and macOS Seatbelt sandbox (vendored & decoupled from openai/codex)"
@@ -15,11 +16,21 @@ doctest = false
 name = "yj-sandbox-run"
 path = "src/bin/yj-sandbox-run/main.rs"
 
+[[bin]]
+name = "codex-windows-sandbox-setup"
+path = "src/bin/setup_main/main.rs"
+
+[[bin]]
+name = "codex-command-runner"
+path = "src/bin/command_runner/main.rs"
+
 [dependencies]
 anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
 dunce = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml_edit = "0.24"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tracing-appender = "0.2"
 tracing = "0.1"
@@ -53,12 +64,40 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_StationsAndDesktops",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Authentication_Identity",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_Networking_WinSock",
+    "Win32_System_Rpc",
+    "Win32_System_Registry",
+]
+
+[target.'cfg(windows)'.dependencies.base64]
+version = "0.22"
+
+[target.'cfg(windows)'.dependencies.glob]
+version = "0.3"
+
+[target.'cfg(windows)'.dependencies.tempfile]
+version = "3"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_System_Com",
+    "Win32_System_Variant",
 ]
 
 [dev-dependencies]
-tempfile = "3"
+glob = "0.3"
 pretty_assertions = "1"
+tempfile = "3"
 
 [profile.release]
 strip = true

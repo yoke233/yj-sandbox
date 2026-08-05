@@ -4,32 +4,39 @@ This product includes software developed by OpenAI as part of the Codex
 project (https://github.com/openai/codex), licensed under the Apache License,
 Version 2.0.
 
-The Windows restricted-token sandbox implementation under `src/` is a vendored
-and modified subset of `codex-rs/windows-sandbox-rs` from openai/codex. The
-macOS Seatbelt policy generator is a vendored and modified subset of
-`codex-rs/sandboxing/src/seatbelt.rs` plus its SBPL policy files. Both have
-been reduced to standalone capture paths and decoupled from the
-`codex_protocol`, `codex_network_proxy`, `codex_otel`, and `codex_utils_*`
-crates.
+The Windows sandbox implementation under `src/` is a vendored and adapted
+subset of `codex-rs/windows-sandbox-rs` from openai/codex. The macOS Seatbelt
+policy generator is a vendored and adapted subset of
+`codex-rs/sandboxing/src/seatbelt.rs` plus its SBPL policy files.
 
 Vendored from openai/codex at commit
-81da9deb065d7adb283816b19b40f89bcc484276. See SYNCING.md for how upstream
+5d89ab65dc9d4d0c55796c11df112b54157922b4. See SYNCING.md for how upstream
 changes are tracked and re-applied.
 
+The `gemini` Windows backend in `src/gemini.rs` is a Rust port of the core
+token and Mandatory Integrity Control flow in Google Gemini CLI's
+`GeminiSandbox.cs`, licensed under the Apache License, Version 2.0, at commit
+ac42fb0a24fe7349e9968e2359ef5232f1cb6e72
+(https://github.com/google-gemini/gemini-cli).
+
 Modifications from upstream:
-  * Removed the elevated backend, WFP network filtering, sandbox-account
-    provisioning, ConPTY/unified-exec sessions, deny-read ACLs, DPAPI, and OTEL.
-  * Replaced `ResolvedWindowsSandboxPermissions`'s `codex_protocol` construction
-    with a self-contained one (cwd-aware workspace roots + extra writable roots
-    + temp; always deny .git/.codex/.agents inside writable roots).
-  * Added `ResolvedSandboxPermissions` as the cross-platform name while keeping
-    `ResolvedWindowsSandboxPermissions` as a compatibility alias.
-  * Replaced the macOS Seatbelt generator's Codex permission/network types with
-    local lightweight equivalents.
-  * Inlined `codex_utils_string::take_bytes_at_char_boundary`.
-  * Added to the capture path: a local Job Object implementation with atomic
-    process assignment, full-tree cleanup when capture completes, times out, or
-    is cancelled, and optional live streaming of child stdout/stderr
-    (`stream_output` flag).
+  * Retained the upstream Windows elevated setup helper, command runner,
+    dedicated sandbox identities, DPAPI state, deny-read ACL handling, ConPTY,
+    firewall/WFP rules, and helper materialization/package layout.
+  * Replaced Codex-wide protocol/config types with a small serializable resolved
+    permissions adapter shared by the main process and command runner.
+  * Removed Codex OTEL/Statsig reporting while retaining setup logging and the
+    underlying WFP/firewall behavior.
+  * Kept the standalone synchronous capture API and the existing non-elevated
+    supervisor, including bounded timeout/cancellation and optional live output.
+  * Added a local windows-sys Job Object and ConPTY handle adapter instead of
+    depending on Codex's general PTY crate.
+  * Kept the macOS Seatbelt generator on local lightweight permission and
+    absolute-path types.
+  * Added the standalone `yj-sandbox-run` CLI with current Codex sandbox option
+    names and `windows.sandbox = "gemini" | "elevated" | "unelevated"`
+    selection. The local `gemini` mode is the default and supports multiple
+    resolved writable roots.
 
 Copyright (c) OpenAI. Licensed under Apache-2.0; see LICENSE.
+Copyright 2026 Google LLC. Licensed under Apache-2.0; see LICENSE.

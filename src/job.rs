@@ -1,5 +1,7 @@
 use std::ffi::c_void;
 use std::io;
+use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::RawHandle;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
@@ -11,13 +13,13 @@ use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 
 /// Owns a Windows Job Object used to terminate a spawned process tree.
 #[derive(Debug)]
-pub(crate) struct JobObject {
+pub struct JobObject {
     handle: HANDLE,
 }
 
 impl JobObject {
     /// Creates a Job Object that kills all members when its last handle closes.
-    pub(crate) fn create() -> io::Result<Self> {
+    pub fn create() -> io::Result<Self> {
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle == 0 {
             return Err(io::Error::last_os_error());
@@ -50,17 +52,24 @@ impl JobObject {
         Ok(())
     }
 
-    pub(crate) fn raw_handle(&self) -> HANDLE {
-        self.handle
-    }
-
     /// Terminates every process currently assigned to the job.
-    pub(crate) fn terminate(&self) -> io::Result<()> {
+    pub fn terminate(&self) -> io::Result<()> {
         let terminated = unsafe { TerminateJobObject(self.handle, 1) };
         if terminated == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// Keeps descendants alive after the runner exits by clearing kill-on-close.
+    pub fn preserve_descendants(&self) -> io::Result<()> {
+        Self::set_limit_flags(self.handle, 0)
+    }
+}
+
+impl AsRawHandle for JobObject {
+    fn as_raw_handle(&self) -> RawHandle {
+        self.handle as RawHandle
     }
 }
 

@@ -83,9 +83,9 @@ try {
             }
         }
     }
-    $elevatedFixture = Join-Path $upstream "codex-rs/windows-sandbox-rs/src/elevated_probe.rs"
-    New-Item -ItemType Directory -Path (Split-Path -Parent $elevatedFixture) -Force | Out-Null
-    Set-Content -LiteralPath $elevatedFixture -Value "baseline-elevated" -Encoding UTF8
+    $wildcardFixture = Join-Path $upstream "codex-rs/windows-sandbox-rs/src/wrapper_probe.rs"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $wildcardFixture) -Force | Out-Null
+    Set-Content -LiteralPath $wildcardFixture -Value "baseline-wildcard" -Encoding UTF8
     Invoke-CheckedGit $upstream @("add", ".")
     Invoke-CheckedGit $upstream @("commit", "-q", "-m", "baseline")
     $baseline = (Invoke-CheckedGit $upstream @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
@@ -103,10 +103,10 @@ try {
     Assert-Equal 0 $clean.Code "clean exit"
 
     $exactFixture = Join-Path $upstream "codex-rs/windows-sandbox-rs/src/cap.rs"
-    $directoryFixture = Join-Path $upstream "codex-rs/windows-sandbox-rs/src/conpty/probe.rs"
+    $directoryFixture = Join-Path $upstream "codex-rs/windows-sandbox-rs/src/unified_exec/probe.rs"
     Set-Content -LiteralPath $exactFixture -Value "pathspec-exact" -Encoding UTF8
     Set-Content -LiteralPath $directoryFixture -Value "pathspec-directory" -Encoding UTF8
-    Set-Content -LiteralPath $elevatedFixture -Value "pathspec-wildcard" -Encoding UTF8
+    Set-Content -LiteralPath $wildcardFixture -Value "pathspec-wildcard" -Encoding UTF8
     Invoke-CheckedGit $upstream @("add", ".")
     Invoke-CheckedGit $upstream @("commit", "-q", "-m", "pathspec changes")
     $pathspecTarget = (Invoke-CheckedGit $upstream @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
@@ -115,13 +115,13 @@ try {
     $pathspecReport = $pathspecResult.Output | ConvertFrom-Json
     $reportedSpecs = @($pathspecReport.changed | ForEach-Object { $_.upstreamPath })
     Assert-Equal $true ($reportedSpecs -contains "codex-rs/windows-sandbox-rs/src/cap.rs") "exact pathspec reported"
-    Assert-Equal $true ($reportedSpecs -contains "codex-rs/windows-sandbox-rs/src/conpty") "directory pathspec reported"
-    Assert-Equal $true ($reportedSpecs -contains "codex-rs/windows-sandbox-rs/src/elevated*") "wildcard pathspec reported"
+    Assert-Equal $true ($reportedSpecs -contains "codex-rs/windows-sandbox-rs/src/unified_exec") "directory pathspec reported"
+    Assert-Equal $true ($reportedSpecs -contains "codex-rs/windows-sandbox-rs/src/wrapper*") "wildcard pathspec reported"
 
     $manifestBeforeOverlapTest = Get-Content -LiteralPath $testManifestPath -Raw
     $overlapManifest = $manifestBeforeOverlapTest | ConvertFrom-Json
     ($overlapManifest.files |
-        Where-Object { $_.upstreamPath -eq "codex-rs/windows-sandbox-rs/src/elevated*" }
+        Where-Object { $_.upstreamPath -eq "codex-rs/windows-sandbox-rs/src/wrapper*" }
     ).upstreamPath = "codex-rs/windows-sandbox-rs/src/cap*"
     $overlapManifest | ConvertTo-Json -Depth 8 |
         Set-Content -LiteralPath $testManifestPath -Encoding UTF8

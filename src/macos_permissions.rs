@@ -99,10 +99,9 @@ impl FileSystemSandboxPolicy {
         }
         self.writable_roots.iter().any(|root| {
             path.starts_with(root.root.as_path())
-                && !root
-                    .read_only_subpaths
-                    .iter()
-                    .any(|excluded| path == excluded.as_path() || path.starts_with(excluded.as_path()))
+                && !root.read_only_subpaths.iter().any(|excluded| {
+                    path == excluded.as_path() || path.starts_with(excluded.as_path())
+                })
         })
     }
 

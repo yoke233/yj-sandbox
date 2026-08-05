@@ -10,6 +10,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
@@ -25,6 +26,7 @@ use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
 use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
 use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
 use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
 use windows_sys::Win32::System::Threading::CreateProcessAsUserW;
 use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
@@ -38,6 +40,12 @@ pub struct CreatedProcess {
     pub startup_info: STARTUPINFOW,
     pub(crate) job: Arc<JobObject>,
     _desktop: LaunchDesktop,
+}
+
+/// Controls console creation for pipe-backed child processes.
+pub enum ConsoleMode {
+    Inherit,
+    NoWindow,
 }
 
 pub fn make_env_block(env: &HashMap<String, String>) -> Vec<u16> {
@@ -79,6 +87,8 @@ unsafe fn ensure_inheritable_stdio(si: &mut STARTUPINFOW) -> Result<()> {
 /// # Safety
 /// Caller must provide a valid primary token handle (`h_token`) with appropriate access,
 /// and the `argv`, `cwd`, and `env_map` must remain valid for the duration of the call.
+// Low-level CreateProcessAsUserW wrapper mirrors the Windows API shape.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn create_process_as_user(
     h_token: HANDLE,
     argv: &[String],
@@ -86,6 +96,7 @@ pub unsafe fn create_process_as_user(
     env_map: &HashMap<String, String>,
     logs_base_dir: Option<&Path>,
     stdio: Option<(HANDLE, HANDLE, HANDLE)>,
+    console_mode: ConsoleMode,
     use_private_desktop: bool,
 ) -> Result<CreatedProcess> {
     let cmdline_str = argv_to_command_line(argv);
@@ -96,12 +107,21 @@ pub unsafe fn create_process_as_user(
     let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
     let cwd_wide = to_wide(cwd);
     let env_block_len = env_block.len();
+    let console_flags = match (&stdio, console_mode) {
+        (Some(_), ConsoleMode::NoWindow) => CREATE_NO_WINDOW,
+        (Some(_), ConsoleMode::Inherit)
+        | (None, ConsoleMode::Inherit)
+        | (None, ConsoleMode::NoWindow) => 0,
+    };
     let attr_count = if stdio.is_some() { 2 } else { 1 };
     let mut attrs = ProcThreadAttributeList::new(attr_count)?;
-    attrs.set_job(job.raw_handle())?;
+    attrs.set_job(job.as_raw_handle() as HANDLE)?;
 
     let mut si: STARTUPINFOEXW = std::mem::zeroed();
     si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    // Some processes (e.g., PowerShell) can fail with STATUS_DLL_INIT_FAILED
+    // if lpDesktop is not set when launching with a restricted token.
+    // Point explicitly at the interactive desktop or a private desktop.
     si.StartupInfo.lpDesktop = desktop.startup_info_desktop();
     match stdio {
         Some((stdin_h, stdout_h, stderr_h)) => {
@@ -129,7 +149,7 @@ pub unsafe fn create_process_as_user(
     }
     si.lpAttributeList = attrs.as_mut_ptr();
 
-    let creation_flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+    let creation_flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | console_flags;
     let ok = CreateProcessAsUserW(
         h_token,
         std::ptr::null(),
@@ -185,10 +205,18 @@ pub enum StderrMode {
 #[allow(dead_code)]
 pub struct PipeSpawnHandles {
     pub process: PROCESS_INFORMATION,
+    job: Arc<JobObject>,
     pub stdin_write: Option<HANDLE>,
     pub stdout_read: HANDLE,
     pub stderr_read: Option<HANDLE>,
     pub(crate) desktop: LaunchDesktop,
+}
+
+impl PipeSpawnHandles {
+    /// Returns the Job Object containing the spawned process.
+    pub fn job(&self) -> Arc<JobObject> {
+        Arc::clone(&self.job)
+    }
 }
 
 /// Spawns a process with anonymous pipes and returns the relevant handles.
@@ -200,6 +228,7 @@ pub fn spawn_process_with_pipes(
     env_map: &HashMap<String, String>,
     stdin_mode: StdinMode,
     stderr_mode: StderrMode,
+    console_mode: ConsoleMode,
     use_private_desktop: bool,
     logs_base_dir: Option<&Path>,
 ) -> Result<PipeSpawnHandles> {
@@ -243,6 +272,7 @@ pub fn spawn_process_with_pipes(
             env_map,
             logs_base_dir,
             stdio,
+            console_mode,
             use_private_desktop,
         )
     };
@@ -264,6 +294,7 @@ pub fn spawn_process_with_pipes(
     };
     let CreatedProcess {
         process_info: pi,
+        job,
         _desktop: desktop,
         ..
     } = created;
@@ -281,6 +312,7 @@ pub fn spawn_process_with_pipes(
 
     Ok(PipeSpawnHandles {
         process: pi,
+        job,
         stdin_write: match stdin_mode {
             StdinMode::Open => Some(in_w),
             StdinMode::Closed => None,

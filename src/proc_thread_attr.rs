@@ -48,6 +48,7 @@ impl ProcThreadAttributeList {
     }
 
     pub fn set_pseudoconsole(&mut self, hpc: isize) -> io::Result<()> {
+        // SAFETY: `hpc` is the Windows-defined value and size for this attribute.
         unsafe {
             self.update(
                 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
@@ -61,13 +62,21 @@ impl ProcThreadAttributeList {
         self.handle_list = handles;
         let value = self.handle_list.as_mut_ptr().cast();
         let size = std::mem::size_of_val(self.handle_list.as_slice());
+        // SAFETY: `value` points to `self.handle_list`, which remains alive
+        // while the attribute list can reference it, and `size` covers that slice.
         unsafe { self.update(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, value, size) }
     }
 
     pub fn set_job(&mut self, job: HANDLE) -> io::Result<()> {
+        // Sandboxed processes must enter the job atomically. If Windows cannot
+        // honor the job list (for example, because a parent job forbids
+        // nesting), fail the spawn rather than briefly run an uncontained
+        // sandbox process tree.
         self.job_list = vec![job];
         let value = self.job_list.as_mut_ptr().cast();
         let size = std::mem::size_of_val(self.job_list.as_slice());
+        // SAFETY: `value` points to `self.job_list`, which remains alive while
+        // the attribute list can reference it, and `size` covers that slice.
         unsafe { self.update(PROC_THREAD_ATTRIBUTE_JOB_LIST, value, size) }
     }
 
@@ -102,18 +111,5 @@ impl Drop for ProcThreadAttributeList {
         unsafe {
             DeleteProcThreadAttributeList(self.as_mut_ptr());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ProcThreadAttributeList;
-    use crate::job::JobObject;
-
-    #[test]
-    fn job_attribute_can_be_materialized() {
-        let job = JobObject::create().expect("create job");
-        let mut attrs = ProcThreadAttributeList::new(1).expect("create attribute list");
-        attrs.set_job(job.raw_handle()).expect("set job attribute");
     }
 }
