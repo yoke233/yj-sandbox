@@ -20,6 +20,33 @@ upstream while isolating standalone differences in a small set of adapters.
 
 The SHA above, `NOTICE`, and `tools/codex-vendor.json` must always agree.
 
+## Upstream review log
+
+### 2026-09-04
+
+`codex-rs/windows-sandbox-rs` has 29 commits between the baseline `5d89ab6`
+and upstream `ea2046f`. They cover provisioning, deny-read resolution, private
+desktops, uninstall, ACL hardening, and helper lookup. None of them touches
+TLS, Schannel, or credential handling.
+
+`src/token.rs` changed by one line in that range: `get_user_sid_bytes` became
+`pub(crate)`. Restricted-token construction is unchanged
+(`DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED`, restricting SIDs =
+capabilities, logon SID, Everyone), and the unelevated path still omits the
+caller user SID that the elevated path adds. That omission is where the
+Schannel write check fails, so the `unelevated` HTTPS failure is unchanged
+upstream: `SEC_E_NO_CREDENTIALS` via Schannel is `openai/codex#17459` (open,
+no maintainer reply, no linked PR), and `openai/codex#42621` reports the same
+error for private Git under `elevated`. Upstream `sandbox_smoketests.py` only
+asserts that curl HTTPS is *blocked*, so a working-HTTPS case is not covered
+by upstream CI at all.
+
+Gemini CLI's Windows sandbox sources were reviewed on the same day and are
+byte-identical to the studied baseline; see
+`docs/gemini-windows-native-sandbox-study.md`, section 9.
+
+This review did not advance the baseline SHA.
+
 ## Sync boundaries
 
 ### Verbatim

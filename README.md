@@ -43,7 +43,9 @@ read-only contract; only `elevated` provides the WFP-backed network boundary.
 
 The original Schannel `curl` failure remains reproducible under upstream-style
 `unelevated`, but `gemini` retains the current user's Schannel context and passes
-the native curl, Git HTTPS, and npm HTTPS E2E checks.
+the native curl, Git HTTPS, and npm HTTPS E2E checks. Upstream has not fixed the
+Schannel path as of 2026-09-04 (`openai/codex#17459` is still open); see
+`SYNCING.md` for the review log.
 
 ## Windows package layout
 

@@ -20,6 +20,7 @@ Gemini 的方案可以作为“无需管理员安装、保留当前用户 Window
 
 - GitHub 仓库：[`google-gemini/gemini-cli`](https://github.com/google-gemini/gemini-cli)
 - 核查提交：`ac42fb0a24fe7349e9968e2359ef5232f1cb6e72`，2026 年 8 月 3 日的主分支提交。
+- 该基线的有效性已在 2026 年 9 月 4 日复核，见第九节。
 - npm 稳定包：`@google/gemini-cli-core@0.53.1`，Apache-2.0，Node.js 20 及以上。
 - npm 包已经导出 `WindowsSandboxManager` 和 `SandboxManager` 类型，但整个 core 包压缩包约 21.7 MB，解包约 54.9 MB，并不是一个专门的轻量 sandbox 包。
 - 稳定包包含 `GeminiSandbox.cs`，没有包含预编译的 `GeminiSandbox.exe`。首次运行由 JS 尝试调用系统 `csc.exe`，把 exe 写到包自身目录。
@@ -233,6 +234,29 @@ Job Object 进程树清理
 
 短期判断：Gemini 方案值得继续做“无管理员写沙箱”原型；上游稳定包不能原样交给调用方当成成熟 sandbox runtime。
 
+## 九、上游状态复核（2026-09-04）
+
+复核方式：对比研究基线 `ac42fb0`（2026-08-03 主分支）与当日主分支 `87a9c71d5`（2026-09-03）的 blob SHA。
+
+结论：Windows 原生沙箱链路自基线以来逐字未变。
+
+| 路径 | 状态 |
+|---|---|
+| `packages/core/src/sandbox/windows/`，7 个文件 | blob SHA 全部相同 |
+| `packages/core/src/sandbox/utils/`，10 个文件 | blob SHA 全部相同 |
+| `packages/core/scripts/compile-windows-sandbox.js` | blob SHA 相同 |
+| `docs/cli/sandbox.md` | blob SHA 相同 |
+
+`packages/core/src/sandbox/windows/` 的最后一次实质改动是 2026 年 4 月 16 日的 `#25338`，此前集中在 3 月底到 4 月中：MIC 引入 `#24057`、原生 ACL 应用优化 `#25077`、symlink 绕过修复 `#24834`、全局 Temp 纳入 allowed 路径 `#24638`。本文引用的 `ac42fb0` 只是当时的主分支 HEAD，实现本身在 4 月 16 日已定型，至今没有变化。
+
+因此第四节到第六节记录的缺陷全部仍然存在：forbidden DACL 拒读不生效、ACL 与 Mandatory Label 不回滚、没有 restricting SID、没有 per-exec 临时目录、`__read` 以 CLR 未处理异常退出。第七节列出的 P0 项没有任何一项被上游修复。
+
+当前唯一在动的是命令字符串校验层。未合并的 PR `#29184`（2026-09-03）修复 issue `#29189`：`git diff --output` 绕过权限提示并静默覆盖任意文件。[8][9] 它只改 `sandbox/utils/commandSafety.ts`、`sandbox/windows/commandSafety.ts` 和对应测试，`GeminiSandbox.cs` 没有变化。这与第四节第 4 小节的判断一致：上游的读写边界有一部分依赖命令与参数黑名单，而不是内核 AccessCheck，所以每出现一个新的写文件参数就要补一次名单。
+
+第七节引用的 `GeminiSandbox.exe ENOENT` 问题 `#24365` 已于 2026-07-29 关闭。[6] 它属于打包和首次编译闭环，不改变本文的安全模型结论。
+
+对本项目的影响：`src/gemini.rs` 不需要跟随上游同步。本项目已经补上的 per-exec 临时目录、多可写根、kill-on-close Job 和 E2E 套件仍然是相对上游的净增量，没有被上游追平。
+
 ## 资料
 
 [1] Microsoft, [CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken) 与 [Restricted Tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens)，官方 Win32 安全 API 文档。
@@ -245,6 +269,10 @@ Job Object 进程树清理
 
 [5] Microsoft, [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)，官方进程树和 KILL_ON_JOB_CLOSE 文档。
 
-[6] Google Gemini CLI, [`GeminiSandbox.exe ENOENT` issue #24365](https://github.com/google-gemini/gemini-cli/issues/24365)，官方仓库问题记录。
+[6] Google Gemini CLI, [`GeminiSandbox.exe ENOENT` issue #24365](https://github.com/google-gemini/gemini-cli/issues/24365)，官方仓库问题记录，2026-07-29 已关闭。
 
 [7] Google Gemini CLI, [Windows MIC PR #24057](https://github.com/google-gemini/gemini-cli/pull/24057)，实现引入和评审记录。
+
+[8] Google Gemini CLI, [`git diff --output` 绕过权限提示 issue #29189](https://github.com/google-gemini/gemini-cli/issues/29189)，2026-09-03 提交，未关闭。
+
+[9] Google Gemini CLI, [Windows sandbox git 参数校验 PR #29184](https://github.com/google-gemini/gemini-cli/pull/29184)，2026-09-03 提交，未合并。

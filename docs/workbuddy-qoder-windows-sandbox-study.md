@@ -430,7 +430,7 @@ Gemini CLI 主分支包含 Apache-2.0 的 Windows 沙箱源码。它复制当前
 
 ### 5. 没有列入候选的项目
 
-- `openai/codex`：当前 `yj-sandbox` 已明确从 `codex-rs/windows-sandbox-rs` vendor 并解耦。直接回到上游不会改变受限用户、ACL、WFP 和 Schannel 这组核心约束，也不能让调用方获得一个稳定的独立 sandbox 产品接口。
+- `openai/codex`：当前 `yj-sandbox` 已明确从 `codex-rs/windows-sandbox-rs` vendor 并解耦。直接回到上游不会改变受限用户、ACL、WFP 和 Schannel 这组核心约束，也不能让调用方获得一个稳定的独立 sandbox 产品接口。2026-09-04 复核确认上游仍未修 Schannel，`openai/codex#17459` 保持 open，详见 `SYNCING.md` 的复核记录。
 - `microsoft/Windows-Sandbox`：GitHub 仓库主要是文档和问题跟踪，不是 Windows Sandbox 系统组件的可复用开源实现。
 - `microsoft/win32-app-isolation`：仓库主要提供 AppContainer/Win32 隔离相关文档和示例，不是可直接调用的通用命令沙箱运行时。
 - Linux 或云端 sandbox 项目：即便提供统一 API，也不能直接运行用户机器现有的原生 Windows 工具，不满足当前替换目标。
