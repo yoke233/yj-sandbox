@@ -25,14 +25,19 @@ $workspace = Join-Path $workspaceBase "yj-sandbox-gemini-e2e-$runId"
 $extraRoot = Join-Path $workspaceBase "yj-sandbox-gemini-extra-$runId"
 $outsideRoot = Join-Path $workspaceBase "yj-sandbox-gemini-outside-$runId"
 $codexHome = Join-Path $workspaceBase "yj-sandbox-gemini-home-$runId"
-$tempFile = Join-Path ([IO.Path]::GetTempPath()) "yj-sandbox-gemini-temp-$runId.txt"
-$artifactRoots = @($workspace, $extraRoot, $outsideRoot, $codexHome)
+$tempRoot = Join-Path $workspaceBase "yj-sandbox-gemini-temp-$runId"
+$tempFile = Join-Path $tempRoot "write.txt"
+$artifactRoots = @($workspace, $extraRoot, $outsideRoot, $codexHome, $tempRoot)
 New-Item -ItemType Directory -Path $artifactRoots | Out-Null
 
 $oldCodexHome = $env:CODEX_HOME
 $oldNpmCache = $env:NPM_CONFIG_CACHE
 
+$oldTemp = $env:TEMP
+$oldTmp = $env:TMP
 try {
+    $env:TEMP = $tempRoot
+    $env:TMP = $tempRoot
     $env:CODEX_HOME = $codexHome
     $env:NPM_CONFIG_CACHE = Join-Path $workspace '.npm-cache'
 
@@ -141,6 +146,10 @@ finally {
     else { $env:CODEX_HOME = $oldCodexHome }
     if ($null -eq $oldNpmCache) { Remove-Item Env:NPM_CONFIG_CACHE -ErrorAction SilentlyContinue }
     else { $env:NPM_CONFIG_CACHE = $oldNpmCache }
+    if ($null -eq $oldTemp) { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
+    else { $env:TEMP = $oldTemp }
+    if ($null -eq $oldTmp) { Remove-Item Env:TMP -ErrorAction SilentlyContinue }
+    else { $env:TMP = $oldTmp }
 
     if (Test-Path -LiteralPath $tempFile) {
         Remove-Item -LiteralPath $tempFile -Force
