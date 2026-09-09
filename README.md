@@ -61,6 +61,8 @@ yj-sandbox-v0.6.0-windows-x86_64/
     └── codex-windows-sandbox-setup.exe
 ```
 
+Releases publish this layout for both `windows-x86_64` and `windows-aarch64`.
+
 The main process locates helpers next to the package and copies the command
 runner into the versioned sandbox state directory when needed. The helpers are
 separate binaries, so their code does not inflate `yj-sandbox-run.exe`; the

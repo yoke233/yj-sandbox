@@ -14,7 +14,7 @@ env:
 
 jobs:
   build-windows:
-    name: Build Windows x86_64
+    name: Build Windows x86_64/aarch64
     runs-on: [self-hosted, Windows, X64]
     defaults:
       run:
@@ -34,6 +34,44 @@ jobs:
       - name: Build
         run: cargo build --release --bins
 
+      - name: Build ARM64
+        run: |
+          $target = "aarch64-pc-windows-msvc"
+          $sysroot = (rustc --print sysroot).Trim()
+          $targetLib = Join-Path $sysroot "lib\rustlib\$target\lib"
+          if (-not (Test-Path -LiteralPath $targetLib)) {
+            throw "Rust target $target is not installed in $sysroot"
+          }
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
+          if ([string]::IsNullOrWhiteSpace($vsInstall)) {
+            throw "Visual Studio installation not found"
+          }
+          $vcVersion = (Get-Content (Join-Path $vsInstall "VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt")).Trim()
+          $vcTools = Join-Path $vsInstall "VC\Tools\MSVC\$vcVersion"
+          $linker = Join-Path $vcTools "bin\Hostx64\arm64\link.exe"
+          if (-not (Test-Path -LiteralPath $linker)) {
+            throw "ARM64 linker not found: $linker"
+          }
+
+          $kitsRoot = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots").KitsRoot10
+          $sdkVersion = Get-ChildItem (Join-Path $kitsRoot "Lib") -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName "ucrt\arm64") } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1 -ExpandProperty Name
+          if ([string]::IsNullOrWhiteSpace($sdkVersion)) {
+            throw "Windows SDK ARM64 libraries not found under $kitsRoot"
+          }
+
+          $env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linker
+          $env:LIB = @(
+            (Join-Path $vcTools "lib\arm64")
+            (Join-Path $kitsRoot "Lib\$sdkVersion\um\arm64")
+            (Join-Path $kitsRoot "Lib\$sdkVersion\ucrt\arm64")
+          ) -join ";"
+          cargo build --release --bins --target $target
+
       - name: Gemini Windows E2E
         timeout-minutes: 5
         run: .\tools\test-gemini-e2e.ps1 -SandboxExe .\target\release\yj-sandbox-run.exe
@@ -44,21 +82,27 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($version) -or $version -eq "${{ github.ref_name }}") {
             $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           }
-          $packageName = "yj-sandbox-v$version-windows-x86_64"
           $dist = Join-Path $PWD "dist"
-          $packageDir = Join-Path $dist $packageName
-          $binDir = Join-Path $packageDir "bin"
-          $resourcesDir = Join-Path $packageDir "codex-resources"
-          New-Item -ItemType Directory -Path $binDir,$resourcesDir -Force | Out-Null
-          Copy-Item "target/release/$env:BIN_NAME.exe" $binDir
-          Copy-Item "target/release/codex-command-runner.exe" $resourcesDir
-          Copy-Item "target/release/codex-windows-sandbox-setup.exe" $resourcesDir
-          Copy-Item README.md,LICENSE,NOTICE $packageDir
-          Compress-Archive -LiteralPath $packageDir -DestinationPath "$dist/$packageName.zip" -Force
+
+          function Package-One([string]$arch, [string]$targetDir) {
+            $packageName = "yj-sandbox-v$version-windows-$arch"
+            $packageDir = Join-Path $dist $packageName
+            $binDir = Join-Path $packageDir "bin"
+            $resourcesDir = Join-Path $packageDir "codex-resources"
+            New-Item -ItemType Directory -Path $binDir,$resourcesDir -Force | Out-Null
+            Copy-Item (Join-Path $targetDir "$env:BIN_NAME.exe") $binDir
+            Copy-Item (Join-Path $targetDir "codex-command-runner.exe") $resourcesDir
+            Copy-Item (Join-Path $targetDir "codex-windows-sandbox-setup.exe") $resourcesDir
+            Copy-Item README.md,LICENSE,NOTICE $packageDir
+            Compress-Archive -LiteralPath $packageDir -DestinationPath "$dist/$packageName.zip" -Force
+          }
+
+          Package-One "x86_64" "target/release"
+          Package-One "aarch64" "target/aarch64-pc-windows-msvc/release"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: yj-sandbox-windows-x86_64
+          name: yj-sandbox-windows
           path: dist/*.zip
           if-no-files-found: error
 
