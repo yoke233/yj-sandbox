@@ -104,9 +104,11 @@ try {
 
     $exactFixture = Join-Path $upstream "codex-rs/windows-sandbox-rs/src/cap.rs"
     $directoryFixture = Join-Path $upstream "codex-rs/windows-sandbox-rs/src/unified_exec/probe.rs"
+    $lifecycleFixture = Join-Path $upstream "codex-rs/core/src/exec.rs"
     Set-Content -LiteralPath $exactFixture -Value "pathspec-exact" -Encoding UTF8
     Set-Content -LiteralPath $directoryFixture -Value "pathspec-directory" -Encoding UTF8
     Set-Content -LiteralPath $wildcardFixture -Value "pathspec-wildcard" -Encoding UTF8
+    Set-Content -LiteralPath $lifecycleFixture -Value "pathspec-lifecycle-owner" -Encoding UTF8
     Invoke-CheckedGit $upstream @("add", ".")
     Invoke-CheckedGit $upstream @("commit", "-q", "-m", "pathspec changes")
     $pathspecTarget = (Invoke-CheckedGit $upstream @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
@@ -117,6 +119,7 @@ try {
     Assert-Equal $true ($reportedSpecs -contains "codex-rs/windows-sandbox-rs/src/cap.rs") "exact pathspec reported"
     Assert-Equal $true ($reportedSpecs -contains "codex-rs/windows-sandbox-rs/src/unified_exec") "directory pathspec reported"
     Assert-Equal $true ($reportedSpecs -contains "codex-rs/windows-sandbox-rs/src/wrapper*") "wildcard pathspec reported"
+    Assert-Equal $true ($reportedSpecs -contains "codex-rs/core/src/exec.rs") "cross-layer lifecycle dependency reported"
 
     $manifestBeforeOverlapTest = Get-Content -LiteralPath $testManifestPath -Raw
     $overlapManifest = $manifestBeforeOverlapTest | ConvertFrom-Json
@@ -248,7 +251,7 @@ try {
         foreach ($failure in $failures) { Write-Error $failure -ErrorAction Continue }
         exit 1
     }
-    Write-Output "PASS clean, exact/directory/wildcard pathspecs, unique manifest, exact mirror, junction refusal, local drift, check-only, batch rollback/apply, modified no-overwrite, non-ancestor/no-copy"
+    Write-Output "PASS clean, exact/directory/wildcard/cross-layer pathspecs, unique manifest, exact mirror, junction refusal, local drift, check-only, batch rollback/apply, modified no-overwrite, non-ancestor/no-copy"
     exit 0
 } finally {
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)

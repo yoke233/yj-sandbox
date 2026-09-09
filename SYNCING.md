@@ -80,6 +80,27 @@ target blob.
 | helper `win.rs` files | Import `yj_sandbox`; OTEL payload fields are omitted. |
 | `src/bin/yj-sandbox-run/main.rs` | Standalone CLI adapter; argument names and upstream backend values follow Codex, with local `gemini` selection. |
 
+### Cross-layer semantic dependencies
+
+A local adapter marked `syncStrategy: never` is protected from overwrite, not
+exempt from upstream review. Every local adapter that replaces behavior owned
+outside a vendored subtree must list those upstream owner files as `omitted`
+review dependencies in `tools/codex-vendor.json`.
+
+For macOS, Seatbelt files define policy and command arguments only. Process
+ownership belongs to Codex core execution code. Reviews of `src/macos_capture.rs`
+must therefore include `core/src/exec.rs`, `core/src/spawn.rs`, and
+`utils/pty/src/process_group.rs`, including their lifecycle regressions. Check
+the complete path from signal/timeout input through process-group cleanup and
+bounded pipe draining; reviewing only `sandboxing/src` is insufficient.
+
+This rule exists because the v0.6.0 selective port updated Seatbelt enforcement
+without reviewing the core lifecycle owner. The result killed only
+`sandbox-exec`, allowed descendants to survive, and could wait forever on pipes
+held by those descendants. See
+`docs/macos-process-tree-upstream-review-2026-09-09.md`.
+
+
 ### Local Gemini extension
 
 `src/gemini.rs` is not vendored from Codex and must never be overwritten by the
