@@ -45,7 +45,7 @@ impl FileSystemSandboxPolicy {
         Self {
             full_disk_read: true,
             full_disk_write: false,
-            include_platform_defaults: false,
+            include_platform_defaults: true,
             readable_roots: Vec::new(),
             writable_roots: Vec::new(),
             unreadable_roots: Vec::new(),
@@ -57,7 +57,7 @@ impl FileSystemSandboxPolicy {
         Self {
             full_disk_read: true,
             full_disk_write: false,
-            include_platform_defaults: false,
+            include_platform_defaults: true,
             readable_roots: Vec::new(),
             writable_roots,
             unreadable_roots: Vec::new(),
@@ -84,6 +84,12 @@ impl FileSystemSandboxPolicy {
     pub(crate) fn get_writable_roots_with_cwd(&self, _cwd: &Path) -> Vec<WritableRoot> {
         self.writable_roots.clone()
     }
+    pub(crate) fn get_writable_roots_with_cwd_preserving_mutable_paths(
+        &self,
+        cwd: &Path,
+    ) -> Vec<WritableRoot> {
+        self.get_writable_roots_with_cwd(cwd)
+    }
 
     pub(crate) fn get_unreadable_roots_with_cwd(&self, _cwd: &Path) -> Vec<AbsolutePathBuf> {
         self.unreadable_roots.clone()
@@ -103,6 +109,9 @@ impl FileSystemSandboxPolicy {
                     path == excluded.as_path() || path.starts_with(excluded.as_path())
                 })
         })
+    }
+    pub(crate) fn can_write_local_path_with_cwd(&self, path: &Path, cwd: &Path) -> bool {
+        self.can_write_path_with_cwd(path, cwd)
     }
 
     fn is_unreadable(&self, path: &Path, _cwd: &Path) -> bool {

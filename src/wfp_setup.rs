@@ -13,22 +13,33 @@ fn panic_payload_to_string(panic_payload: Box<dyn std::any::Any + Send>) -> Stri
 
 /// Installs the same upstream WFP rules. The standalone crate intentionally
 /// omits Codex's Statsig/OTEL reporting dependency.
-pub fn install_wfp_filters<F>(_state_dir: &Path, offline_username: &str, mut log: F)
+pub fn install_wfp_filters<F>(
+    _state_dir: &Path,
+    offline_username: &str,
+    mut log: F,
+) -> anyhow::Result<()>
 where
     F: FnMut(&str),
 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         install_wfp_filters_for_account(offline_username)
     })) {
-        Ok(Ok(installed_filter_count)) => log(&format!(
-            "WFP setup succeeded for {offline_username} with {installed_filter_count} installed filters"
-        )),
-        Ok(Err(err)) => log(&format!(
-            "WFP setup failed for {offline_username}: {err}; continuing elevated setup"
-        )),
-        Err(payload) => log(&format!(
-            "WFP setup panicked for {offline_username}: {}; continuing elevated setup",
-            panic_payload_to_string(payload)
-        )),
+        Ok(Ok(installed_filter_count)) => {
+            log(&format!(
+                "WFP setup succeeded for {offline_username} with {installed_filter_count} installed filters"
+            ));
+            Ok(())
+        }
+        Ok(Err(err)) => {
+            log(&format!("WFP setup failed for {offline_username}: {err}"));
+            Err(err)
+        }
+        Err(payload) => {
+            let message = panic_payload_to_string(payload);
+            log(&format!(
+                "WFP setup panicked for {offline_username}: {message}"
+            ));
+            anyhow::bail!("WFP setup panicked for {offline_username}: {message}")
+        }
     }
 }

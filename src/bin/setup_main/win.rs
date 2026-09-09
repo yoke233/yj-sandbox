@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::ffi::c_void;
 use std::io::Write;
+use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ use std::sync::mpsc;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::NetworkManagement::NetManagement::UF_ACCOUNTDISABLE;
 use windows_sys::Win32::Security::ACL;
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
@@ -27,25 +29,62 @@ use windows_sys::Win32::Security::Authorization::GRANT_ACCESS;
 use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
 use windows_sys::Win32::Security::Authorization::SetEntriesInAclW;
 use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
+use windows_sys::Win32::Security::Authorization::SetSecurityInfo;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_SID;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_W;
 use windows_sys::Win32::Security::CONTAINER_INHERIT_ACE;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::OBJECT_INHERIT_ACE;
+use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
-use yj_sandbox::{
-    SETUP_VERSION, SetupErrorCode, SetupErrorReport, SetupFailure, add_deny_write_ace,
-    convert_string_sid_to_sid, ensure_allow_mask_aces_with_inheritance, ensure_allow_write_aces,
-    extract_setup_failure, hide_newly_created_users, install_wfp_filters, log_note, log_writer,
-    path_mask_allows, path_write_aces_need_refresh, sandbox_bin_dir, sandbox_dir,
-    sandbox_secrets_dir, string_from_sid_bytes, sync_persistent_deny_read_acls, to_wide,
-    workspace_write_cap_sid_for_root, workspace_write_root_overlaps_path, write_setup_error_report,
-};
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
+use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
+use windows_sys::Win32::System::Threading::INFINITE;
+use yj_sandbox::DirectoryOpenDisposition;
+use yj_sandbox::SETUP_VERSION;
+use yj_sandbox::SetupErrorCode;
+use yj_sandbox::SetupErrorReport;
+use yj_sandbox::SetupFailure;
+use yj_sandbox::acquire_sandbox_setup_lock;
+use yj_sandbox::add_deny_write_ace;
+use yj_sandbox::convert_string_sid_to_sid;
+use yj_sandbox::ensure_allow_mask_aces_with_inheritance;
+use yj_sandbox::ensure_allow_write_aces;
+use yj_sandbox::extract_setup_failure;
+use yj_sandbox::hide_newly_created_users;
+use yj_sandbox::install_wfp_filters;
+use yj_sandbox::local_user_flags;
+use yj_sandbox::log_note;
+use yj_sandbox::log_writer;
+use yj_sandbox::open_directory_no_reparse;
+use yj_sandbox::path_mask_allows;
+use yj_sandbox::path_write_aces_need_refresh;
+use yj_sandbox::resolve_sid;
+use yj_sandbox::sandbox_bin_dir;
+use yj_sandbox::sandbox_dir;
+use yj_sandbox::sandbox_secrets_dir;
+use yj_sandbox::set_local_user_flags;
+use yj_sandbox::setup_error_path;
+use yj_sandbox::setup_log_writer;
+use yj_sandbox::string_from_sid_bytes;
+use yj_sandbox::sync_persistent_deny_read_acls;
+use yj_sandbox::to_wide;
+use yj_sandbox::workspace_write_cap_sid_for_root;
+use yj_sandbox::workspace_write_root_overlaps_path;
+use yj_sandbox::write_file_atomically;
+use yj_sandbox::write_setup_error_report;
 
 const DENY_ACCESS: i32 = 3;
+#[cfg(test)]
+const WRITE_ROOT_ALLOW_MASK: u32 =
+    FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE;
+
 mod sandbox_users;
 mod setup_runtime_bin;
 use read_acl_mutex::acquire_read_acl_mutex;
@@ -54,7 +93,6 @@ use sandbox_users::commit_setup_marker;
 use sandbox_users::prepare_setup_marker;
 use sandbox_users::provision_sandbox_users;
 use sandbox_users::resolve_sandbox_users_group_sid;
-use sandbox_users::resolve_sid;
 use sandbox_users::sid_bytes_to_psid;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -85,8 +123,15 @@ struct Payload {
 enum SetupMode {
     #[default]
     Full,
+    InteractiveProvision,
     ProvisionOnly,
     ReadAclsOnly,
+}
+
+#[derive(Clone, Copy)]
+enum DaclInheritance {
+    Inherited,
+    Protected,
 }
 
 fn log_line(log: &mut dyn Write, msg: &str) -> Result<()> {
@@ -267,6 +312,7 @@ fn read_mask_allows_or_log(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lock_sandbox_dir(
     dir: &Path,
     real_user: &str,
@@ -274,9 +320,24 @@ fn lock_sandbox_dir(
     sandbox_group_access_mode: i32,
     sandbox_group_mask: u32,
     real_user_mask: u32,
-    _log: &mut dyn Write,
+    dacl_inheritance: DaclInheritance,
+    setup_mode: SetupMode,
 ) -> Result<()> {
-    std::fs::create_dir_all(dir)?;
+    // ProvisionOnly accepts another user's CODEX_HOME; keep its ACL mutation
+    // bound to a no-reparse handle without changing interactive setup behavior.
+    let directory = match setup_mode {
+        SetupMode::Full | SetupMode::InteractiveProvision | SetupMode::ReadAclsOnly => {
+            std::fs::create_dir_all(dir)?;
+            None
+        }
+        SetupMode::ProvisionOnly => Some(open_directory_no_reparse(
+            dir,
+            // SetSecurityInfo can reject a WRITE_DAC-only directory handle.
+            READ_CONTROL | WRITE_DAC,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            DirectoryOpenDisposition::OpenOrCreate,
+        )?),
+    };
     let system_sid = resolve_sid("SYSTEM")?;
     let admins_sid = resolve_sid("Administrators")?;
     let real_sid = resolve_sid(real_user)?;
@@ -337,20 +398,43 @@ fn lock_sandbox_dir(
                 "SetEntriesInAclW sandbox dir failed: {set}",
             ));
         }
-        let path_w = to_wide(dir.as_os_str());
-        let res = SetNamedSecurityInfoW(
-            path_w.as_ptr() as *mut u16,
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            new_dacl,
-            std::ptr::null_mut(),
-        );
+        let security_information = match dacl_inheritance {
+            DaclInheritance::Inherited => DACL_SECURITY_INFORMATION,
+            DaclInheritance::Protected => {
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+            }
+        };
+        let (res, api) = match directory.as_ref() {
+            Some(directory) => (
+                SetSecurityInfo(
+                    directory.as_raw_handle() as _,
+                    SE_FILE_OBJECT,
+                    security_information,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    new_dacl,
+                    std::ptr::null_mut(),
+                ),
+                "SetSecurityInfo",
+            ),
+            None => {
+                let path_w = to_wide(dir.as_os_str());
+                (
+                    SetNamedSecurityInfoW(
+                        path_w.as_ptr() as *mut u16,
+                        SE_FILE_OBJECT,
+                        security_information,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        new_dacl,
+                        std::ptr::null_mut(),
+                    ),
+                    "SetNamedSecurityInfoW",
+                )
+            }
+        };
         if res != 0 {
-            return Err(anyhow::anyhow!(
-                "SetNamedSecurityInfoW sandbox dir failed: {res}",
-            ));
+            return Err(anyhow::anyhow!("{api} sandbox dir failed: {res}"));
         }
         if !new_dacl.is_null() {
             LocalFree(new_dacl as HLOCAL);
@@ -365,13 +449,16 @@ fn lock_sandbox_dir(
 }
 
 pub fn main() -> Result<()> {
-    let ret = real_main();
+    let mut setup_mode = None;
+    let ret = real_main(&mut setup_mode);
     if let Err(e) = &ret {
         // Best-effort: log unexpected top-level errors.
         if let Ok(codex_home) = std::env::var("CODEX_HOME") {
             let sbx_dir = sandbox_dir(Path::new(&codex_home));
             let _ = std::fs::create_dir_all(&sbx_dir);
-            if let Some(mut f) = log_writer(&sbx_dir) {
+            // An unparsed payload must not enable writes to an existing log.
+            let mode = setup_mode.unwrap_or(SetupMode::ProvisionOnly);
+            if let Ok(mut f) = open_setup_log(&sbx_dir, mode) {
                 let _ = writeln!(
                     f,
                     "[{}] top-level error: {}",
@@ -384,7 +471,18 @@ pub fn main() -> Result<()> {
     ret
 }
 
-fn real_main() -> Result<()> {
+fn open_setup_log(sbx_dir: &Path, mode: SetupMode) -> Result<Box<dyn Write>> {
+    match mode {
+        SetupMode::ProvisionOnly => Ok(Box::new(setup_log_writer(sbx_dir)?)),
+        SetupMode::Full | SetupMode::InteractiveProvision | SetupMode::ReadAclsOnly => {
+            log_writer(sbx_dir)
+                .map(|log| Box::new(log) as Box<dyn Write>)
+                .context("open daily sandbox log")
+        }
+    }
+}
+
+fn real_main(setup_mode: &mut Option<SetupMode>) -> Result<()> {
     let mut args = std::env::args().collect::<Vec<_>>();
     if args.len() != 2 {
         return Err(anyhow::Error::new(SetupFailure::new(
@@ -405,6 +503,7 @@ fn real_main() -> Result<()> {
             format!("failed to parse payload json: {err}"),
         ))
     })?;
+    *setup_mode = Some(payload.mode);
     if payload.version != SETUP_VERSION {
         return Err(anyhow::Error::new(SetupFailure::new(
             SetupErrorCode::HelperRequestArgsFailed,
@@ -421,10 +520,10 @@ fn real_main() -> Result<()> {
             format!("failed to create sandbox dir {}: {err}", sbx_dir.display()),
         ))
     })?;
-    let mut log = log_writer(&sbx_dir).ok_or_else(|| {
+    let mut log = open_setup_log(&sbx_dir, payload.mode).map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
             SetupErrorCode::HelperLogFailed,
-            format!("open log in {} failed", sbx_dir.display()),
+            format!("open log in {} failed: {err}", sbx_dir.display()),
         ))
     })?;
     let result = run_setup(&payload, &mut log, &sbx_dir);
@@ -440,7 +539,17 @@ fn real_main() -> Result<()> {
             code: failure.code,
             message: failure.message,
         };
-        if let Err(write_err) = write_setup_error_report(&payload.codex_home, &report) {
+        let write_report = match payload.mode {
+            SetupMode::ProvisionOnly => serde_json::to_vec_pretty(&report)
+                .map_err(anyhow::Error::from)
+                .and_then(|json| {
+                    write_file_atomically(&setup_error_path(&payload.codex_home), &json)
+                }),
+            SetupMode::Full | SetupMode::InteractiveProvision | SetupMode::ReadAclsOnly => {
+                write_setup_error_report(&payload.codex_home, &report)
+            }
+        };
+        if let Err(write_err) = write_report {
             let _ = log_line(
                 &mut log,
                 &format!("setup error report write failed: {write_err}"),
@@ -456,16 +565,25 @@ fn real_main() -> Result<()> {
 
 fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
     let writes_setup_marker = !payload.refresh_only && payload.mode != SetupMode::ReadAclsOnly;
-    if writes_setup_marker {
-        prepare_setup_marker(&payload.codex_home, &payload.real_user)?;
-    }
+    let marker = if writes_setup_marker {
+        Some(prepare_setup_marker(
+            &payload.codex_home,
+            &payload.real_user,
+            payload.mode,
+        )?)
+    } else {
+        None
+    };
     match payload.mode {
         SetupMode::ReadAclsOnly => run_read_acl_only(payload, log),
-        SetupMode::ProvisionOnly => run_provision_only(payload, log, sbx_dir),
+        SetupMode::InteractiveProvision | SetupMode::ProvisionOnly => {
+            run_provision_only(payload, log, sbx_dir)
+        }
         SetupMode::Full => run_setup_full(payload, log, sbx_dir),
     }?;
-    if writes_setup_marker {
+    if let Some(marker) = marker {
         commit_setup_marker(
+            marker,
             &payload.codex_home,
             &payload.offline_username,
             &payload.online_username,
@@ -539,16 +657,28 @@ fn run_read_acl_only(payload: &Payload, log: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-fn provision_and_hide_sandbox_users(
-    payload: &Payload,
-    log: &mut dyn Write,
-    sbx_dir: &Path,
-) -> Result<()> {
+fn provision_sandbox(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
+    let _setup_lock = acquire_sandbox_setup_lock(INFINITE)?;
+    let mut repairing_disabled_accounts = false;
+    for username in [&payload.offline_username, &payload.online_username] {
+        if local_user_flags(username)?.is_some_and(|flags| flags & UF_ACCOUNTDISABLE != 0) {
+            repairing_disabled_accounts = true;
+        }
+    }
+    // Interrupted cleanup can leave one account missing and the other disabled. Keep any
+    // replacement disabled too until this repair has restored the network restrictions.
+    let new_user_flags = if repairing_disabled_accounts {
+        UF_ACCOUNTDISABLE
+    } else {
+        0
+    };
     let provision_result = provision_sandbox_users(
         &payload.codex_home,
         &payload.offline_username,
         &payload.online_username,
+        new_user_flags,
         log,
+        payload.mode,
     );
     if let Err(err) = provision_result {
         if extract_setup_failure(&err).is_some() {
@@ -564,6 +694,32 @@ fn provision_and_hide_sandbox_users(
         payload.online_username.clone(),
     ];
     hide_newly_created_users(&users, sbx_dir);
+    let offline_sid = resolve_sid(&payload.offline_username).map_err(|err| {
+        anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperSidResolveFailed,
+            format!(
+                "resolve SID for offline user {} failed: {err}",
+                payload.offline_username
+            ),
+        ))
+    })?;
+    let offline_sid_str = string_from_sid_bytes(&offline_sid).map_err(anyhow::Error::msg)?;
+    configure_offline_sandbox_network(payload, &offline_sid_str, log)?;
+    let wfp_result =
+        install_wfp_filters(&payload.codex_home, &payload.offline_username, |message| {
+            let _ = log_line(log, message);
+        });
+    if repairing_disabled_accounts {
+        // Ordinary setup keeps its best-effort WFP behavior. Recovery must not reopen logons
+        // after cleanup removed protections unless restoring those protections succeeded.
+        wfp_result?;
+        for username in [&payload.offline_username, &payload.online_username] {
+            let flags = local_user_flags(username)?.ok_or_else(|| {
+                anyhow::anyhow!("sandbox user {username} disappeared during repair")
+            })?;
+            set_local_user_flags(username, flags & !UF_ACCOUNTDISABLE)?;
+        }
+    }
     Ok(())
 }
 
@@ -597,17 +753,10 @@ fn configure_offline_sandbox_network(
             format!("ensure offline outbound block failed: {err}"),
         )));
     }
-    install_wfp_filters(&payload.codex_home, &payload.offline_username, |message| {
-        let _ = log_line(log, message);
-    });
     Ok(())
 }
 
-fn lock_persistent_sandbox_dirs(
-    payload: &Payload,
-    sandbox_group_sid: &[u8],
-    log: &mut dyn Write,
-) -> Result<()> {
+fn lock_persistent_sandbox_dirs(payload: &Payload, sandbox_group_sid: &[u8]) -> Result<()> {
     lock_sandbox_dir(
         &sandbox_dir(&payload.codex_home),
         &payload.real_user,
@@ -615,7 +764,8 @@ fn lock_persistent_sandbox_dirs(
         GRANT_ACCESS,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
-        log,
+        DaclInheritance::Inherited,
+        payload.mode,
     )
     .map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
@@ -633,7 +783,8 @@ fn lock_persistent_sandbox_dirs(
         DENY_ACCESS,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
-        log,
+        DaclInheritance::Inherited,
+        payload.mode,
     )
     .map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
@@ -651,11 +802,7 @@ fn lock_persistent_sandbox_dirs(
     Ok(())
 }
 
-fn lock_sandbox_bin_dir(
-    payload: &Payload,
-    sandbox_group_sid: &[u8],
-    log: &mut dyn Write,
-) -> Result<()> {
+fn lock_sandbox_bin_dir(payload: &Payload, sandbox_group_sid: &[u8]) -> Result<()> {
     lock_sandbox_dir(
         &sandbox_bin_dir(&payload.codex_home),
         &payload.real_user,
@@ -663,7 +810,8 @@ fn lock_sandbox_bin_dir(
         GRANT_ACCESS,
         FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
-        log,
+        DaclInheritance::Protected,
+        payload.mode,
     )
     .map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
@@ -677,17 +825,7 @@ fn lock_sandbox_bin_dir(
 }
 
 fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
-    provision_and_hide_sandbox_users(payload, log, sbx_dir)?;
-    let offline_sid = resolve_sid(&payload.offline_username).map_err(|err| {
-        anyhow::Error::new(SetupFailure::new(
-            SetupErrorCode::HelperSidResolveFailed,
-            format!(
-                "resolve SID for offline user {} failed: {err}",
-                payload.offline_username
-            ),
-        ))
-    })?;
-    let offline_sid_str = string_from_sid_bytes(&offline_sid).map_err(anyhow::Error::msg)?;
+    provision_sandbox(payload, log, sbx_dir)?;
 
     let sandbox_group_sid = resolve_sandbox_users_group_sid().map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
@@ -696,10 +834,8 @@ fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) ->
         ))
     })?;
 
-    configure_offline_sandbox_network(payload, &offline_sid_str, log)?;
-
-    lock_sandbox_bin_dir(payload, &sandbox_group_sid, log)?;
-    lock_persistent_sandbox_dirs(payload, &sandbox_group_sid, log)?;
+    lock_sandbox_bin_dir(payload, &sandbox_group_sid)?;
+    lock_persistent_sandbox_dirs(payload, &sandbox_group_sid)?;
     log_note("setup provisioning binary completed", Some(sbx_dir));
     Ok(())
 }
@@ -707,18 +843,8 @@ fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) ->
 fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
     let refresh_only = payload.refresh_only;
     if !refresh_only {
-        provision_and_hide_sandbox_users(payload, log, sbx_dir)?;
+        provision_sandbox(payload, log, sbx_dir)?;
     }
-    let offline_sid = resolve_sid(&payload.offline_username).map_err(|err| {
-        anyhow::Error::new(SetupFailure::new(
-            SetupErrorCode::HelperSidResolveFailed,
-            format!(
-                "resolve SID for offline user {} failed: {err}",
-                payload.offline_username
-            ),
-        ))
-    })?;
-    let offline_sid_str = string_from_sid_bytes(&offline_sid).map_err(anyhow::Error::msg)?;
 
     let sandbox_group_sid = resolve_sandbox_users_group_sid().map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
@@ -736,9 +862,6 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         string_from_sid_bytes(&sandbox_group_sid).map_err(anyhow::Error::msg)?;
 
     let mut refresh_errors: Vec<String> = Vec::new();
-    if !refresh_only {
-        configure_offline_sandbox_network(payload, &offline_sid_str, log)?;
-    }
 
     // Deny-read ACEs must be present before the sandboxed command starts. Apply
     // them synchronously here instead of delegating them to the background
@@ -954,7 +1077,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         }
     }
 
-    lock_sandbox_bin_dir(payload, &sandbox_group_sid, log)?;
+    lock_sandbox_bin_dir(payload, &sandbox_group_sid)?;
 
     if refresh_only {
         log_line(
@@ -967,7 +1090,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         )?;
     }
     if !refresh_only {
-        lock_persistent_sandbox_dirs(payload, &sandbox_group_sid, log)?;
+        lock_persistent_sandbox_dirs(payload, &sandbox_group_sid)?;
     }
 
     unsafe {
@@ -986,26 +1109,29 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
     Ok(())
 }
 
-#[cfg(all(test, any()))]
+#[cfg(test)]
+#[path = "win_acl_tests.rs"]
+mod acl_tests;
+
+#[cfg(test)]
 mod tests {
     use super::Payload;
     use super::SETUP_VERSION;
     use super::WRITE_ROOT_ALLOW_MASK;
     use super::convert_string_sid_to_sid;
     use super::workspace_write_cap_sids_for_path;
-    use codex_otel::StatsigMetricsSettings;
-    use codex_windows_sandbox::ensure_allow_mask_aces;
-    use codex_windows_sandbox::ensure_allow_write_aces;
-    use codex_windows_sandbox::load_or_create_cap_sids;
-    use codex_windows_sandbox::path_mask_allows;
-    use codex_windows_sandbox::path_write_aces_need_refresh;
-    use codex_windows_sandbox::workspace_write_cap_sid_for_root;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::fs;
     use windows_sys::Win32::Foundation::HLOCAL;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
+    use yj_sandbox::ensure_allow_mask_aces;
+    use yj_sandbox::ensure_allow_write_aces;
+    use yj_sandbox::load_or_create_cap_sids;
+    use yj_sandbox::path_mask_allows;
+    use yj_sandbox::path_write_aces_need_refresh;
+    use yj_sandbox::workspace_write_cap_sid_for_root;
 
     fn payload_json() -> serde_json::Value {
         json!({
@@ -1022,13 +1148,6 @@ mod tests {
     }
 
     #[test]
-    fn payload_defaults_otel_absent() {
-        let payload: Payload = serde_json::from_value(payload_json()).expect("payload");
-
-        assert_eq!(payload.otel, None);
-    }
-
-    #[test]
     fn payload_accepts_provision_only_mode() {
         let mut payload = payload_json();
         payload["mode"] = json!("provision-only");
@@ -1038,19 +1157,12 @@ mod tests {
     }
 
     #[test]
-    fn payload_accepts_otel_settings() {
+    fn payload_accepts_interactive_provision_mode() {
         let mut payload = payload_json();
-        payload["otel"] = json!({
-            "environment": "prod",
-        });
+        payload["mode"] = json!("interactive-provision");
         let payload: Payload = serde_json::from_value(payload).expect("payload");
 
-        assert_eq!(
-            payload.otel,
-            Some(StatsigMetricsSettings {
-                environment: "prod".to_string(),
-            })
-        );
+        assert_eq!(payload.mode, super::SetupMode::InteractiveProvision);
     }
 
     #[test]

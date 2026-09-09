@@ -86,6 +86,10 @@ mod dpapi;
 #[allow(dead_code)]
 mod env;
 #[cfg(windows)]
+mod file_write;
+#[cfg(windows)]
+mod framed_io;
+#[cfg(windows)]
 mod gemini;
 #[cfg(windows)]
 mod helper_materialization;
@@ -98,6 +102,8 @@ mod job;
 #[cfg(windows)]
 #[allow(dead_code)]
 mod logging;
+#[cfg(windows)]
+mod no_reparse_dir;
 #[cfg(windows)]
 mod path_normalization;
 #[cfg(windows)]
@@ -112,6 +118,10 @@ mod sandbox_utils;
 mod setup;
 #[cfg(windows)]
 mod setup_error;
+#[cfg(windows)]
+mod setup_launch;
+#[cfg(windows)]
+mod setup_mutex;
 #[cfg(windows)]
 mod spawn_prep;
 #[cfg(any(windows, test))]
@@ -164,6 +174,8 @@ pub use dpapi::protect as dpapi_protect;
 #[cfg(windows)]
 pub use elevated_impl::{ElevatedSandboxCaptureRequest, run_windows_sandbox_capture_elevated};
 #[cfg(windows)]
+pub use file_write::write_file_atomically;
+#[cfg(windows)]
 pub use helper_materialization::{resolve_current_exe_for_launch, resolve_exe_for_launch};
 #[cfg(windows)]
 pub use hide_users::{hide_current_user_profile_dir, hide_newly_created_users};
@@ -176,7 +188,12 @@ pub use ipc_framed::{
 #[cfg(windows)]
 pub use job::JobObject;
 #[cfg(windows)]
-pub use logging::{log_note, log_writer};
+pub use logging::{log_note, log_writer, setup_log_writer};
+#[cfg(windows)]
+pub use no_reparse_dir::{
+    DirectoryOpenDisposition, create_directory_guard, open_directory_no_reparse,
+    validate_local_directory_path,
+};
 #[cfg(windows)]
 pub use process::{
     ConsoleMode, PipeSpawnHandles, StderrMode, StdinMode, read_handle_loop,
@@ -185,14 +202,16 @@ pub use process::{
 #[cfg(windows)]
 pub use setup::{
     SETUP_VERSION, SandboxSetupRequest, SetupRootOverrides, run_elevated_provisioning_setup,
-    run_elevated_setup, run_setup_refresh, run_setup_refresh_with_extra_read_roots,
-    sandbox_bin_dir, sandbox_dir, sandbox_secrets_dir,
+    run_elevated_provisioning_setup_with_retained_handles, run_elevated_setup, run_setup_refresh,
+    run_setup_refresh_with_extra_read_roots, sandbox_bin_dir, sandbox_dir, sandbox_secrets_dir,
 };
 #[cfg(windows)]
 pub use setup_error::{
     SetupErrorCode, SetupErrorReport, SetupFailure, extract_failure as extract_setup_failure,
-    write_setup_error_report,
+    setup_error_path, write_setup_error_report,
 };
+#[cfg(windows)]
+pub use setup_mutex::acquire_sandbox_setup_lock;
 #[cfg(windows)]
 pub use token::{
     LocalSid, convert_string_sid_to_sid, create_readonly_token_with_caps_and_user_from,
@@ -203,7 +222,10 @@ pub use wfp::install_wfp_filters_for_account;
 #[cfg(windows)]
 pub use wfp_setup::install_wfp_filters;
 #[cfg(windows)]
-pub use winutil::{string_from_sid_bytes, to_wide};
+pub use winutil::{
+    SANDBOX_USERS_GROUP, ensure_sandbox_users_group, local_user_flags, resolve_sid,
+    set_local_user_flags, string_from_sid_bytes, to_wide,
+};
 
 // `path_normalization` is portable (used by `resolved_permissions`).
 #[cfg(not(windows))]

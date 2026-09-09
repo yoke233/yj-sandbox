@@ -53,7 +53,7 @@ The release layout follows upstream Codex. Windows has three executable roles,
 but only the main CLI belongs on `PATH`:
 
 ```text
-yj-sandbox-v0.5.0-windows-x86_64/
+yj-sandbox-v0.6.0-windows-x86_64/
 ├── bin/
 │   └── yj-sandbox-run.exe
 └── codex-resources/

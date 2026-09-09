@@ -47,6 +47,16 @@ byte-identical to the studied baseline; see
 
 This review did not advance the baseline SHA.
 
+### 2026-09-09
+
+Selective hardening was ported against reviewed Codex commit `ea2046f36d5ee12d39c8e168fc3e5129301afa2b`, plus the isolated proxy-marker optimization from `38cbebaf3fe3e81a94bf462079e7cf9659fc9e50`.
+
+Windows now includes bounded framed I/O, no-reparse directory guards, handle-relative atomic state replacement, retained setup handles, machine-wide setup serialization, protected setup logs/markers/error reports, account-repair safeguards, and the reviewed ACL/helper lifecycle fixes. Standalone adapters still omit Codex protocol, service, and OTEL dependencies.
+
+macOS now includes writable-root alias validation, literal-versus-subpath binding, protected-ancestor rename denies, expanded unreadable-glob enforcement, and process-only shared scratch grants. The obsolete `restricted_read_only_platform_defaults.sbpl` mapping was replaced by the upstream preferences and read-only policy fragments.
+
+The recorded vendor baseline remains `5d89ab65dc9d4d0c55796c11df112b54157922b4`: this was a selective semantic port, not a complete subtree sync. `NOTICE` and the manifest baseline therefore remain unchanged.
+
 ## Sync boundaries
 
 ### Verbatim

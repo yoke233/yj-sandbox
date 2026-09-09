@@ -104,7 +104,8 @@ pub fn run_sandbox_capture(
         enforce_managed_network: false,
         network: None,
         extra_allow_unix_sockets: &[],
-    });
+    })
+    .map_err(anyhow::Error::msg)?;
 
     let mut child = Command::new(MACOS_PATH_TO_SEATBELT_EXECUTABLE)
         .args(seatbelt_args)

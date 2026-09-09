@@ -6,6 +6,7 @@
 
 use std::ffi::OsStr;
 use std::fmt;
+use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -45,6 +46,13 @@ impl AbsolutePathBuf {
 
     pub(crate) fn to_string_lossy(&self) -> std::borrow::Cow<'_, str> {
         self.0.to_string_lossy()
+    }
+}
+impl Deref for AbsolutePathBuf {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_path()
     }
 }
 
