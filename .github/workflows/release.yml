@@ -140,6 +140,10 @@ jobs:
             exit 1
           fi
 
+      - name: Test
+        run: |
+          "$CARGO" test --all-targets --target x86_64-apple-darwin
+
       - name: Build
         run: |
           set -euo pipefail

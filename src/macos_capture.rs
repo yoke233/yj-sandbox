@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::io;
 use std::io::Read;
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Child;
 use std::process::Command;
@@ -17,6 +18,149 @@ use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
 use std::time::Instant;
+
+const PROCESS_GROUP_TERMINATION_GRACE_PERIOD: Duration = Duration::from_millis(100);
+fn signal_process_group_id(process_group_id: libc::pid_t, signal: libc::c_int) -> io::Result<bool> {
+    let result = unsafe { libc::killpg(process_group_id, signal) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+fn signal_process_id(process_id: libc::pid_t, signal: libc::c_int) -> io::Result<bool> {
+    let result = unsafe { libc::kill(process_id, signal) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+fn signal_process_group_with_member_fallback(
+    process_group_id: u32,
+    signal: libc::c_int,
+) -> io::Result<bool> {
+    let process_group_id = libc::pid_t::try_from(process_group_id)
+        .ok()
+        .filter(|process_group_id| *process_group_id > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process group ID"))?;
+
+    match signal_process_group_id(process_group_id, signal) {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {}
+        result => return result,
+    }
+
+    let mut process_ids: Vec<libc::pid_t> = vec![0; 16];
+    loop {
+        let buffer_size = libc::c_int::try_from(std::mem::size_of_val(process_ids.as_slice()))
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "process group is too large")
+            })?;
+        let count = unsafe {
+            libc::proc_listpgrppids(
+                process_group_id,
+                process_ids.as_mut_ptr().cast(),
+                buffer_size,
+            )
+        };
+        if count < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let count = count as usize;
+        if count < process_ids.len() {
+            process_ids.truncate(count);
+            break;
+        }
+        let capacity = process_ids.len().checked_mul(2).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "process group is too large")
+        })?;
+        process_ids.resize(capacity, 0);
+    }
+    process_ids.sort_unstable_by_key(|process_id| *process_id == process_group_id);
+
+    let mut signalled = false;
+    let mut first_error = None;
+    for process_id in process_ids {
+        if process_id <= 0 {
+            continue;
+        }
+        let current_group_id = unsafe { libc::getpgid(process_id) };
+        if current_group_id == -1 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) && first_error.is_none() {
+                first_error = Some(error);
+            }
+            continue;
+        }
+        if current_group_id != process_group_id {
+            continue;
+        }
+        match signal_process_id(process_id, signal) {
+            Ok(delivered) => signalled |= delivered,
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+
+    if signalled {
+        Ok(true)
+    } else {
+        first_error.map_or(Ok(false), Err)
+    }
+}
+
+struct ChildProcessGroup {
+    id: u32,
+    armed: bool,
+}
+
+impl ChildProcessGroup {
+    fn new(id: u32) -> Self {
+        Self { id, armed: true }
+    }
+
+    fn signal(&self, signal: libc::c_int) -> io::Result<bool> {
+        signal_process_group_with_member_fallback(self.id, signal)
+    }
+
+    fn terminate(&mut self) -> io::Result<()> {
+        if !self.signal(libc::SIGTERM)? {
+            self.armed = false;
+            return Ok(());
+        }
+
+        let deadline = Instant::now() + PROCESS_GROUP_TERMINATION_GRACE_PERIOD;
+        while Instant::now() < deadline {
+            if !self.signal(0)? {
+                self.armed = false;
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        self.signal(libc::SIGKILL)?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for ChildProcessGroup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.signal(libc::SIGKILL);
+        }
+    }
+}
 
 enum WaitOutcome {
     Exited(ExitStatus),
@@ -115,7 +259,9 @@ pub fn run_sandbox_capture(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()?;
+    let mut process_group = ChildProcessGroup::new(child.id());
 
     let stdout = child
         .stdout
@@ -130,14 +276,17 @@ pub fn run_sandbox_capture(
 
     let wait_outcome = wait_for_child(&mut child, timeout_ms, cancellation.as_ref())?;
     let (exit_code, timed_out) = match wait_outcome {
-        WaitOutcome::Exited(status) => (status.code().unwrap_or(1), false),
+        WaitOutcome::Exited(status) => {
+            process_group.terminate()?;
+            (status.code().unwrap_or(1), false)
+        }
         WaitOutcome::TimedOut => {
-            let _ = child.kill();
+            process_group.terminate()?;
             let _ = child.wait();
             (128 + 64, true)
         }
         WaitOutcome::Cancelled => {
-            let _ = child.kill();
+            process_group.terminate()?;
             let _ = child.wait();
             (1, false)
         }

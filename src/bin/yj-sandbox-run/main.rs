@@ -617,6 +617,22 @@ fn persist_elevated_mode(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn macos_termination_cancellation() -> Result<yj_sandbox::WindowsSandboxCancellationToken, String> {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&cancelled))
+        .map_err(|err| format!("cannot install SIGTERM handler: {err}"))?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
+        .map_err(|err| format!("cannot install SIGINT handler: {err}"))?;
+    Ok(yj_sandbox::WindowsSandboxCancellationToken::new(
+        move || cancelled.load(Ordering::SeqCst),
+    ))
+}
+
 fn run() -> Result<i32, String> {
     let command = WindowsCommand::parse();
     let home = codex_home()?;
@@ -720,7 +736,24 @@ fn run() -> Result<i32, String> {
     }
     .map_err(|err| format!("sandbox run failed: {err:#}"))?;
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let result = {
+        let cancellation = Some(macos_termination_cancellation()?);
+        run_sandbox_capture(
+            &permissions,
+            &home,
+            command.command,
+            &cwd,
+            env_map,
+            None,
+            cancellation,
+            false,
+            true,
+        )
+    }
+    .map_err(|err| format!("sandbox run failed: {err:#}"))?;
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     let result = run_sandbox_capture(
         &permissions,
         &home,
