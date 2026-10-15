@@ -251,7 +251,14 @@ mod macos_capture;
 #[cfg(target_os = "macos")]
 pub use macos_capture::run_sandbox_capture;
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(any(test, all(target_env = "ohos", target_arch = "aarch64")))]
+mod ohos_policy;
+#[cfg(all(target_env = "ohos", target_arch = "aarch64"))]
+mod ohos;
+#[cfg(all(target_env = "ohos", target_arch = "aarch64"))]
+pub use ohos::{ohos_check, run_ohos_directory_control, run_sandbox_capture};
+
+#[cfg(not(any(windows, target_os = "macos", all(target_env = "ohos", target_arch = "aarch64"))))]
 mod unsupported_capture;
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", all(target_env = "ohos", target_arch = "aarch64"))))]
 pub use unsupported_capture::run_sandbox_capture;

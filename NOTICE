@@ -37,6 +37,8 @@ Modifications from upstream:
     names and `windows.sandbox = "gemini" | "elevated" | "unelevated"`
     selection. The local `gemini` mode is the default and supports multiple
     resolved writable roots.
+  * Added the OHOS ARM64 owned-child ptrace backend for accidental directory
+    access control; it is not a hostile-code isolation boundary.
 
 Copyright (c) OpenAI. Licensed under Apache-2.0; see LICENSE.
 Copyright 2026 Google LLC. Licensed under Apache-2.0; see LICENSE.

@@ -634,7 +634,37 @@ fn macos_termination_cancellation() -> Result<yj_sandbox::WindowsSandboxCancella
 }
 
 fn run() -> Result<i32, String> {
+    // This capability request never parses a command and never launches user code.
+    #[cfg(all(target_env = "ohos", target_arch = "aarch64"))]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--ohos-check")) {
+        if std::env::args_os().len() != 2 {
+            return Err("--ohos-check must be used alone".to_string());
+        }
+        let capability = yj_sandbox::ohos_check().map_err(|err| format!("OHOS directory control unavailable: {err:#}"))?;
+        println!("{capability}");
+        return Ok(0);
+    }
     let command = WindowsCommand::parse();
+    #[cfg(all(target_env = "ohos", target_arch = "aarch64"))]
+    {
+        if command.permissions_profile.is_some() || command.config_profile.is_some()
+            || !command.config_overrides.is_empty() || command.include_managed_config
+            || !command.add_dir.is_empty() || command.sandbox_state.sandbox_state_disable_network
+        {
+            return Err("OHOS requires explicit sandbox-state-json roots and enabled network; implicit profiles/config/add-dir are unsupported".to_string());
+        }
+        let raw = command.sandbox_state.sandbox_state_json.as_deref()
+            .ok_or_else(|| "OHOS directory control requires --sandbox-state-json".to_string())?;
+        return yj_sandbox::run_ohos_directory_control(
+            raw, &command.sandbox_state.sandbox_state_readable_root, command.command,
+        ).map_err(|err| format!("OHOS directory control failed: {err:#}"));
+    }
+    #[cfg(not(all(target_env = "ohos", target_arch = "aarch64")))]
+    { run_legacy(command) }
+}
+
+#[cfg(not(all(target_env = "ohos", target_arch = "aarch64")))]
+fn run_legacy(command: WindowsCommand) -> Result<i32, String> {
     let home = codex_home()?;
     if let Some(exit_code) = run_setup(&command, &home)? {
         return Ok(exit_code);
@@ -753,7 +783,7 @@ fn run() -> Result<i32, String> {
     }
     .map_err(|err| format!("sandbox run failed: {err:#}"))?;
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", all(target_env = "ohos", target_arch = "aarch64"))))]
     let result = run_sandbox_capture(
         &permissions,
         &home,
